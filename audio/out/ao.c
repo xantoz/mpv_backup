@@ -190,9 +190,11 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
 
     ao->device = talloc_strdup(ao, dev);
 
+#if 0
     ao->api = ao->driver->play ? &ao_api_push : &ao_api_pull;
     ao->api_priv = talloc_zero_size(ao, ao->api->priv_size);
     assert(!ao->api->priv_defaults && !ao->api->options);
+#endif
 
     ao->stream_silence = flags & AO_INIT_STREAM_SILENCE;
 
@@ -233,12 +235,9 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
         MP_VERBOSE(ao, "device buffer: %d samples.\n", ao->device_buffer);
     ao->buffer = MPMAX(ao->device_buffer, ao->def_buffer * ao->samplerate);
 
-    int align = af_format_sample_alignment(ao->format);
-    ao->buffer = (ao->buffer + align - 1) / align * align;
     MP_VERBOSE(ao, "using soft-buffer of %d samples.\n", ao->buffer);
 
-    if (ao->api->init(ao) < 0)
-        goto fail;
+    ao_buffer_create(ao);
     return ao;
 
 fail:
@@ -336,83 +335,11 @@ struct ao *ao_init_best(struct mpv_global *global,
     return ao;
 }
 
-// Uninitialize and destroy the AO. Remaining audio must be dropped.
-void ao_uninit(struct ao *ao)
-{
-    if (ao)
-        ao->api->uninit(ao);
-    talloc_free(ao);
-}
-
-// Queue the given audio data. Start playback if it hasn't started yet. Return
-// the number of samples that was accepted (the core will try to queue the rest
-// again later). Should never block.
-//  data: start pointer for each plane. If the audio data is packed, only
-//        data[0] is valid, otherwise there is a plane for each channel.
-//  samples: size of the audio data (see ao->sstride)
-//  flags: currently AOPLAY_FINAL_CHUNK can be set
-int ao_play(struct ao *ao, void **data, int samples, int flags)
-{
-    return ao->api->play(ao, data, samples, flags);
-}
-
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg)
 {
-    return ao->api->control ? ao->api->control(ao, cmd, arg) : CONTROL_UNKNOWN;
-}
-
-// Return size of the buffered data in seconds. Can include the device latency.
-// Basically, this returns how much data there is still to play, and how long
-// it takes until the last sample in the buffer reaches the speakers. This is
-// used for audio/video synchronization, so it's very important to implement
-// this correctly.
-double ao_get_delay(struct ao *ao)
-{
-    return ao->api->get_delay(ao);
-}
-
-// Return free size of the internal audio buffer. This controls how much audio
-// the core should decode and try to queue with ao_play().
-int ao_get_space(struct ao *ao)
-{
-    return ao->api->get_space(ao);
-}
-
-// Stop playback and empty buffers. Essentially go back to the state after
-// ao->init().
-void ao_reset(struct ao *ao)
-{
-    if (ao->api->reset)
-        ao->api->reset(ao);
-}
-
-// Pause playback. Keep the current buffer. ao_get_delay() must return the
-// same value as before pausing.
-void ao_pause(struct ao *ao)
-{
-    if (ao->api->pause)
-        ao->api->pause(ao);
-}
-
-// Resume playback. Play the remaining buffer. If the driver doesn't support
-// pausing, it has to work around this and e.g. use ao_play_silence() to fill
-// the lost audio.
-void ao_resume(struct ao *ao)
-{
-    if (ao->api->resume)
-        ao->api->resume(ao);
-}
-
-// Block until the current audio buffer has played completely.
-void ao_drain(struct ao *ao)
-{
-    if (ao->api->drain)
-        ao->api->drain(ao);
-}
-
-bool ao_eof_reached(struct ao *ao)
-{
-    return ao->api->get_eof ? ao->api->get_eof(ao) : true;
+    if (ao->driver->control)
+        return ao->driver->control(ao, cmd, arg);
+    return CONTROL_UNKNOWN;
 }
 
 // Query the AO_EVENT_*s as requested by the events parameter, and return them.

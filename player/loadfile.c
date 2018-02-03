@@ -1171,8 +1171,8 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->error_playing = MPV_ERROR_LOADING_FAILED;
     mpctx->stop_play = 0;
     mpctx->filename = NULL;
-    mpctx->shown_aframes = 0;
-    mpctx->shown_vframes = 0;
+    mpctx->shown_aframes = false;
+    mpctx->shown_vframes = false;
     mpctx->last_vo_pts = MP_NOPTS_VALUE;
     mpctx->last_chapter_seek = -2;
     mpctx->last_chapter_pts = MP_NOPTS_VALUE;

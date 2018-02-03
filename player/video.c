@@ -103,7 +103,6 @@ void reset_video_state(struct MPContext *mpctx)
     mpctx->num_next_frames = 0;
     mp_image_unrefp(&mpctx->saved_frame);
 
-    mpctx->delay = 0;
     mpctx->time_frame = 0;
     mpctx->video_pts = MP_NOPTS_VALUE;
     mpctx->last_frame_duration = 0;
@@ -344,8 +343,8 @@ static void adjust_sync(struct MPContext *mpctx, double v_pts, double frame_time
 
     if (mpctx->audio_status != STATUS_PLAYING)
         return;
-
-    double a_pts = written_audio_pts(mpctx) + opts->audio_delay - mpctx->delay;
+return; // TODO
+    double a_pts = playing_audio_pts(mpctx) + opts->audio_delay - mpctx->total_avsync_change;
     double av_delay = a_pts - v_pts;
 
     double change = av_delay * 0.1;
@@ -356,7 +355,6 @@ static void adjust_sync(struct MPContext *mpctx, double v_pts, double frame_time
         change = -max_change;
     else if (change > max_change)
         change = max_change;
-    mpctx->delay += change;
     mpctx->total_avsync_change += change;
 
     if (mpctx->display_sync_active)
@@ -382,7 +380,6 @@ static void handle_new_frame(struct MPContext *mpctx)
             frame_time = 0;
         }
     }
-    mpctx->delay -= frame_time;
     if (mpctx->video_status >= STATUS_PLAYING) {
         mpctx->time_frame += frame_time / mpctx->video_speed;
         adjust_sync(mpctx, pts, frame_time);
@@ -551,8 +548,13 @@ static void update_avsync_before_frame(struct MPContext *mpctx)
         // don't touch the timing
     } else if (mpctx->audio_status == STATUS_PLAYING &&
                mpctx->video_status == STATUS_PLAYING &&
-               !ao_untimed(mpctx->ao))
+               !ao_untimed(mpctx->ao) &&
+               mpctx->num_next_frames > 0)
     {
+        // TODO: restore
+        mpctx->time_frame = mpctx->next_frames[0]->pts - (playing_audio_pts(mpctx)
+            + opts->audio_delay + mpctx->total_avsync_change);
+#if 0
         double buffered_audio = ao_get_delay(mpctx->ao);
 
         double predicted = mpctx->delay / mpctx->video_speed +
@@ -572,6 +574,7 @@ static void update_avsync_before_frame(struct MPContext *mpctx)
         }
 
         mpctx->time_frame = buffered_audio - mpctx->delay / mpctx->video_speed;
+#endif
     } else {
         /* If we're more than 200 ms behind the right playback
          * position, don't try to speed up display of following
@@ -997,7 +1000,6 @@ void write_video(struct MPContext *mpctx)
         if (vo_c->filter->failed_output_conversion)
             goto error;
 
-        mpctx->delay = 0;
         mpctx->last_av_difference = 0;
 
         if (mpctx->video_status <= STATUS_PLAYING) {
@@ -1142,7 +1144,7 @@ void write_video(struct MPContext *mpctx)
     if (mpctx->num_next_frames >= 1)
         handle_new_frame(mpctx);
 
-    mpctx->shown_vframes++;
+    mpctx->shown_vframes = true;
     if (mpctx->video_status < STATUS_PLAYING) {
         mpctx->video_status = STATUS_READY;
         // After a seek, make sure to wait until the first frame is visible.

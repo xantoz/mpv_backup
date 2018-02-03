@@ -79,8 +79,8 @@ struct ao_device_list {
 
 struct ao;
 struct mpv_global;
-struct input_ctx;
 struct encode_lavc_context;
+struct mp_async_queue;
 
 struct ao *ao_init_best(struct mpv_global *global,
                         int init_flags,
@@ -92,17 +92,19 @@ void ao_get_format(struct ao *ao,
                    int *samplerate, int *format, struct mp_chmap *channels);
 const char *ao_get_name(struct ao *ao);
 const char *ao_get_description(struct ao *ao);
+struct mp_async_queue *ao_get_queue(struct ao *ao);
+void ao_start_playing(struct ao *ao);
+bool ao_is_ready(struct ao *ao);
 bool ao_untimed(struct ao *ao);
-int ao_play(struct ao *ao, void **data, int samples, int flags);
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg);
 void ao_set_gain(struct ao *ao, float gain);
-double ao_get_delay(struct ao *ao);
-int ao_get_space(struct ao *ao);
+void ao_set_start_pts(struct ao *ao, double start);
+void ao_set_end_pts(struct ao *ao, double end);
+double ao_get_pts(struct ao *ao);
 void ao_reset(struct ao *ao);
-void ao_pause(struct ao *ao);
-void ao_resume(struct ao *ao);
-void ao_drain(struct ao *ao);
-bool ao_eof_reached(struct ao *ao);
+void ao_set_paused(struct ao *ao, bool pause);
+void ao_get_eof_status(struct ao *ao, bool *encountered, bool *reached,
+                       bool *recover);
 int ao_query_and_reset_events(struct ao *ao, int events);
 void ao_request_reload(struct ao *ao);
 void ao_hotplug_event(struct ao *ao);

@@ -482,16 +482,6 @@ fail:
     return -1;
 }
 
-static void drain(struct ao *ao)
-{
-#ifdef SNDCTL_DSP_SYNC
-    struct priv *p = ao->priv;
-    // to get the buffer played
-    if (p->audio_fd != -1)
-        ioctl(p->audio_fd, SNDCTL_DSP_SYNC, NULL);
-#endif
-}
-
 // stop playing and empty buffers (for seeking/pause)
 static void reset(struct ao *ao)
 {
@@ -635,7 +625,6 @@ const struct ao_driver audio_out_oss = {
     .pause     = audio_pause,
     .resume    = audio_resume,
     .reset     = reset,
-    .drain     = drain,
     .wait      = audio_wait,
     .wakeup    = ao_wakeup_poll,
     .list_devs = list_devs,

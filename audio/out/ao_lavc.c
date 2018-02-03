@@ -500,11 +500,6 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     return taken;
 }
 
-static void drain(struct ao *ao)
-{
-    // pretend we support it, so generic code doesn't force a wait
-}
-
 const struct ao_driver audio_out_lavc = {
     .encode = true,
     .description = "audio encoding using libavcodec",
@@ -513,7 +508,6 @@ const struct ao_driver audio_out_lavc = {
     .uninit    = uninit,
     .get_space = get_space,
     .play      = play,
-    .drain     = drain,
 };
 
 // vim: sw=4 ts=4 et tw=80

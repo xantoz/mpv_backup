@@ -7,6 +7,7 @@
 
 #include "filter_internal.h"
 
+#include "f_async_queue.h"
 #include "f_autoconvert.h"
 #include "f_auto_filters.h"
 #include "f_lavfi.h"
@@ -44,6 +45,7 @@ struct chain {
 
     struct vo *vo;
     struct ao *ao;
+    struct mp_filter *sink; // filter for output (currently AO only)
 
     struct mp_frame pending_input;
 
@@ -374,6 +376,7 @@ static void process_format_change(struct mp_filter *f)
                 recheck_channelremix_filter(p);
             } else {
                 p->ao = NULL;
+                TA_FREEP(&p->sink);
                 p->public.ao_needs_update = true;
                 p->format_change_phase = 5;
             }
@@ -595,6 +598,7 @@ void mp_output_chain_set_ao(struct mp_output_chain *c, struct ao *ao)
     assert(p->public.ao_needs_update); // can't just call it any time
     assert(p->format_change_phase == 5);
     assert(!p->format_change_second_try);
+    assert(ao);
 
     p->public.ao_needs_update = false;
     p->format_change_phase = 0;
@@ -610,6 +614,13 @@ void mp_output_chain_set_ao(struct mp_output_chain *c, struct ao *ao)
     mp_autoconvert_add_afmt(p->convert, out_format);
     mp_autoconvert_add_srate(p->convert, out_rate);
     mp_autoconvert_add_chmap(p->convert, &out_channels);
+
+    p->sink = mp_async_queue_create_filter(p->f, MP_PIN_IN, ao_get_queue(ao));
+    if (!p->sink)
+        abort();
+    // (connecting with the "public" pin internally isn't very sane, but it
+    // works, and for now video requires this to be a public pin)
+    mp_pin_connect(p->sink->pins[0], p->f->pins[1]);
 
     maybe_move_up_channelremix(p, &out_channels);
 

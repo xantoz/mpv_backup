@@ -76,6 +76,35 @@ struct ao {
     int buffer;
     double def_buffer;
     void *api_priv;
+
+    // Audio buffer state.
+
+    struct mp_async_queue *in_queue;
+
+    pthread_mutex_t buffer_lock;
+
+    // --- fields protected by buffer_lock
+    struct mp_filter *root; // root filter (serves as parent)
+    struct mp_filter *in_filter; // in_queue input
+    struct mp_pin *in_pin;
+    struct mp_aframe *input; // frame last read
+    bool input_eof;
+    struct pts_range *pts_ranges;
+    int num_pts_ranges;
+    double start_pts;
+    double end_pts;
+    double last_pts;
+    bool last_eof;
+    bool playing; // set once playback officially starts
+    bool paused; // (orthogonal to playing state - can be paused while playing)
+    char *convert_buffer;
+};
+
+struct pts_range {
+    int64_t start; // start time in samples (get_sample_time() base)
+    int64_t duration; // real duration, in samples
+    double pts; // start time in source PTS (seconds)
+    double speed;
 };
 
 extern const struct ao_driver ao_api_push;
@@ -149,12 +178,8 @@ struct ao_driver {
     int (*get_space)(struct ao *ao);
     // push based: see ao_play()
     int (*play)(struct ao *ao, void **data, int samples, int flags);
-    // push based: see ao_get_delay()
+    // push based: size of the buffered data in seconds, maybe with device latency
     double (*get_delay)(struct ao *ao);
-    // push based: block until all queued audio is played (optional)
-    void (*drain)(struct ao *ao);
-    // Optional. Return true if audio has stopped in any way.
-    bool (*get_eof)(struct ao *ao);
     // Wait until the audio buffer needs to be refilled. The lock is the
     // internal mutex usually protecting the internal AO state (and used to
     // protect driver calls), and must be temporarily unlocked while waiting.
@@ -186,6 +211,14 @@ struct ao_driver {
     int (*hotplug_init)(struct ao *ao);
     void (*hotplug_uninit)(struct ao *ao);
 
+    // Internal only (for push.c/pull.c)
+    //
+    // Optional. Return true if audio has stopped in any way.
+    bool (*get_eof)(struct ao *ao);
+    // Return the current playback time, in the same base as the time argument
+    // in ao_read_buffer().
+    int64_t (*get_sample_time)(struct ao *ao);
+
     // For option parsing (see vo.h)
     int priv_size;
     const void *priv_defaults;
@@ -215,7 +248,11 @@ bool ao_chmap_sel_get_def(struct ao *ao, const struct mp_chmap_sel *s,
 void ao_device_list_add(struct ao_device_list *list, struct ao *ao,
                         struct ao_device_desc *e);
 
+// Not for AO drivers.
+void ao_buffer_create(struct ao *ao);
 void ao_post_process_data(struct ao *ao, void **data, int num_samples);
+void ao_read_buffer(struct ao *ao, void **data, int samples, int64_t out_stime,
+                    int *out_samples, bool *out_eof, bool *out_underrun);
 
 struct ao_convert_fmt {
     int src_fmt;        // source AF_FORMAT_*

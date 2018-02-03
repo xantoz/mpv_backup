@@ -2005,8 +2005,6 @@ static int mp_property_audio_delay(void *ctx, struct m_property *prop,
         return M_PROPERTY_OK;
     case M_PROPERTY_SET:
         mpctx->opts->audio_delay = *(float *)arg;
-        if (mpctx->ao_chain && mpctx->vo_chain)
-            mpctx->delay += mpctx->opts->audio_delay - delay;
         mp_wakeup_core(mpctx);
         return M_PROPERTY_OK;
     }

@@ -191,7 +191,6 @@ struct ao_chain {
     struct mp_output_chain *filter;
 
     struct ao *ao;
-    struct mp_audio_buffer *ao_buffer;
     double ao_resume_time;
 
     // 1-element output frame queue.
@@ -214,7 +213,6 @@ struct ao_chain {
 enum playback_status {
     // code may compare status values numerically
     STATUS_SYNCING,     // seeking for a position to resume
-    STATUS_FILLING,     // decoding more data (so you start with full buffers)
     STATUS_READY,       // buffers full, playback can be started any time
     STATUS_PLAYING,     // normal playback
     STATUS_DRAINING,    // decoding has ended; still playing out queued buffers
@@ -282,7 +280,7 @@ typedef struct MPContext {
     int files_broken;       // couldn't be played at all
 
     // Current file statistics
-    int64_t shown_vframes, shown_aframes;
+    bool shown_vframes, shown_aframes;
 
     struct demux_chapter *chapters;
     int num_chapters;
@@ -340,10 +338,6 @@ typedef struct MPContext {
     double hrseek_pts;
     struct seek_params current_seek;
     bool ab_loop_clip;      // clip to the "b" part of an A-B loop if available
-    // AV sync: the next frame should be shown when the audio out has this
-    // much (in seconds) buffered data left. Increased when more data is
-    // written to the ao, decreased when moving to the next video frame.
-    double delay;
     // AV sync: time in seconds until next frame should be shown
     double time_frame;
     // How much video timing has been changed to make it match the audio
@@ -365,9 +359,6 @@ typedef struct MPContext {
     double last_frame_duration;
     // Video PTS, or audio PTS if video has ended.
     double playback_pts;
-    // audio stats only
-    int64_t audio_stat_start;
-    double written_audio;
 
     int last_chapter;
 
@@ -461,7 +452,6 @@ int init_audio_decoder(struct MPContext *mpctx, struct track *track);
 int reinit_audio_filters(struct MPContext *mpctx);
 double playing_audio_pts(struct MPContext *mpctx);
 void fill_audio_out_buffers(struct MPContext *mpctx);
-double written_audio_pts(struct MPContext *mpctx);
 void clear_audio_output_buffers(struct MPContext *mpctx);
 void update_playback_speed(struct MPContext *mpctx);
 void uninit_audio_out(struct MPContext *mpctx);

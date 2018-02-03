@@ -37,8 +37,6 @@
 #include "osdep/timer.h"
 #include "osdep/atomic.h"
 
-#include "audio/audio_buffer.h"
-
 struct ao_push_state {
     pthread_t thread;
     pthread_mutex_t lock;
@@ -63,6 +61,8 @@ struct ao_push_state {
 
     int wakeup_pipe[2];
 };
+
+#if 0
 
 // lock must be held
 static void wakeup_playthread(struct ao *ao)
@@ -139,44 +139,6 @@ static void resume(struct ao *ao)
     p->expected_end_time = 0;
     wakeup_playthread(ao);
     pthread_mutex_unlock(&p->lock);
-}
-
-static void drain(struct ao *ao)
-{
-    struct ao_push_state *p = ao->api_priv;
-    double maxbuffer = ao->buffer / (double)ao->samplerate + 1;
-
-    MP_VERBOSE(ao, "draining...\n");
-
-    pthread_mutex_lock(&p->lock);
-    if (p->paused)
-        goto done;
-
-    p->final_chunk = true;
-    wakeup_playthread(ao);
-
-    // Wait until everything is done. Since the audio API (especially ALSA)
-    // can't be trusted to do this right, and we're hard-blocking here, apply
-    // an upper bound timeout.
-    struct timespec until = mp_rel_time_to_timespec(maxbuffer);
-    while (p->still_playing && mp_audio_buffer_samples(p->buffer) > 0) {
-        if (pthread_cond_timedwait(&p->wakeup, &p->lock, &until)) {
-            MP_WARN(ao, "Draining is taking too long, aborting.\n");
-            goto done;
-        }
-    }
-
-    if (ao->driver->drain) {
-        ao->driver->drain(ao);
-    } else {
-        double time = unlocked_get_delay(ao);
-        mp_sleep_us(MPMIN(time, maxbuffer) * 1e6);
-    }
-
-done:
-    pthread_mutex_unlock(&p->lock);
-
-    reset(ao);
 }
 
 static int unlocked_get_space(struct ao *ao)
@@ -474,7 +436,10 @@ err:
     return -1;
 }
 
+#endif
+
 const struct ao_driver ao_api_push = {
+#if 0
     .init = init,
     .control = control,
     .uninit = uninit,
@@ -484,9 +449,9 @@ const struct ao_driver ao_api_push = {
     .get_delay = get_delay,
     .pause = audio_pause,
     .resume = resume,
-    .drain = drain,
     .get_eof = get_eof,
     .priv_size = sizeof(struct ao_push_state),
+#endif
 };
 
 // Must be called locked.
@@ -496,8 +461,10 @@ int ao_play_silence(struct ao *ao, int samples)
 
     struct ao_push_state *p = ao->api_priv;
 
+#if 0 // TODO
     if (!realloc_silence(ao, samples) || !ao->driver->play)
         return 0;
+#endif
 
     return ao->driver->play(ao, (void **)p->silence, samples, 0);
 }

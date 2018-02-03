@@ -216,7 +216,6 @@ def build(ctx):
     sources = [
         ## Audio
         ( "audio/aframe.c" ),
-        ( "audio/audio_buffer.c" ),
         ( "audio/chmap.c" ),
         ( "audio/chmap_sel.c" ),
         ( "audio/decode/ad_lavc.c" ),
@@ -252,7 +251,7 @@ def build(ctx):
         ( "audio/out/ao_wasapi.c",               "wasapi" ),
         ( "audio/out/ao_wasapi_changenotify.c",  "wasapi" ),
         ( "audio/out/ao_wasapi_utils.c",         "wasapi" ),
-        ( "audio/out/pull.c" ),
+        ( "audio/out/buffer.c" ),
         ( "audio/out/push.c" ),
 
         ## Core
@@ -289,6 +288,7 @@ def build(ctx):
         ( "demux/packet.c" ),
         ( "demux/timeline.c" ),
 
+        ( "filters/f_async_queue.c" ),
         ( "filters/f_autoconvert.c" ),
         ( "filters/f_auto_filters.c" ),
         ( "filters/f_decoder_wrapper.c" ),

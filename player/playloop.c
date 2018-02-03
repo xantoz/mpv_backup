@@ -148,13 +148,8 @@ void set_pause_state(struct MPContext *mpctx, bool user_pause)
         mpctx->paused = internal_paused;
         send_update = true;
 
-        if (mpctx->ao && mpctx->ao_chain) {
-            if (internal_paused) {
-                ao_pause(mpctx->ao);
-            } else {
-                ao_resume(mpctx->ao);
-            }
-        }
+        if (mpctx->ao && mpctx->ao_chain)
+            ao_set_paused(mpctx->ao, internal_paused);
 
         if (mpctx->video_out)
             vo_set_paused(mpctx->video_out, internal_paused);
@@ -1014,7 +1009,8 @@ static void handle_playback_restart(struct MPContext *mpctx)
 
         MP_VERBOSE(mpctx, "starting audio playback\n");
         mpctx->audio_status = STATUS_PLAYING;
-        fill_audio_out_buffers(mpctx); // actually play prepared buffer
+        assert(mpctx->ao);
+        ao_start_playing(mpctx->ao); // actually play prepared buffer
         mp_wakeup_core(mpctx);
     }
 
