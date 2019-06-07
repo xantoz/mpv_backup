@@ -270,6 +270,8 @@ def build(ctx):
         ( "common/version.c" ),
 
         ## Demuxers
+        ( "demux/cache_malloc.c" ),
+        ( "demux/cache_mmap.c", "posix" ),
         ( "demux/codec_tags.c" ),
         ( "demux/cue.c" ),
         ( "demux/demux.c" ),

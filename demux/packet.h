@@ -45,10 +45,11 @@ typedef struct demux_packet {
     struct mp_codec_params *codec;  // set to non-NULL iff segmented is set
     double start, end;              // set to non-NOPTS iff segmented is set
 
-    // private
+    // private (demux.c, maybe demuxer cache backends)
     struct demux_packet *next;
     struct AVPacket *avpacket;   // keep the buffer allocation and sidedata
-    uint64_t cum_pos; // demux.c internal: cumulative size until _start_ of pkt
+    uint64_t cum_pos; // cumulative size until _start_ of pkt
+    uint64_t cache_pos;
     double kf_seek_pts; // demux.c internal: seek pts for keyframe range
     struct mp_packet_tags *metadata; // timed metadata (demux.c internal)
 } demux_packet_t;
@@ -69,5 +70,16 @@ void demux_packet_copy_attribs(struct demux_packet *dst, struct demux_packet *sr
 int demux_packet_set_padding(struct demux_packet *dp, int start, int end);
 int demux_packet_add_blockadditional(struct demux_packet *dp, uint64_t id,
                                      void *data, size_t size);
+
+void demux_packet_unref_contents(struct demux_packet *dp);
+bool demux_packet_needs_unref_contents(struct demux_packet *dp);
+
+#define DEMUX_PACKET_SER_ALIGN 4
+#define DEMUX_PACKET_SER_MINSIZE 16
+size_t demux_packet_serialize_payload(struct demux_packet *dp, void *ptr,
+                                      size_t avail);
+size_t demux_packet_deserialize_payload_get_size(void *ptr, size_t avail);
+struct demux_packet *demux_packet_deserialize_payload(struct demux_packet *dp,
+                                                      void *ptr, size_t avail);
 
 #endif /* MPLAYER_DEMUX_PACKET_H */

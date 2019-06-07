@@ -3855,6 +3855,40 @@ Cache
     very high, so the actually achieved readahead will usually be limited by
     the value of the ``--demuxer-max-bytes`` option.
 
+``--cache-backend=<malloc|mmap>``
+    Select cache backend (default: malloc).
+
+    ``malloc``
+        Each packet is stored using multiple allocations using the standard
+        library's malloc. This will probably kill the mpv process if the
+        system is out of memory.
+
+    ``mmap``
+        Packet data is stored in a linear file on disk (location chosen by
+        ``--cache-dir``). Currently, this cannot prune old data, nor does it
+        support multiple seek ranges. This probably works best for live streams.
+        For good results, ``--demuxer-max-bytes``, ``--demuxer-max-back-bytes``,
+        and maybe even ``--cache-secs`` should be adjusted to large values, or
+        the cache may start refusing to read more data. If the disk gets full,
+        bad things will happen.
+
+        A major disadvantage is that the disk accesses to the cache are not
+        buffered (unless the kernel happens to predict mpv's access patterns).
+
+        Strongly not recommended on 32 bit platforms.
+
+        This is available on UNIX only.
+
+``--cache-mmap-fallocate=<yes|no>``
+    Use fallocate, and stop if it fails (default: yes). Normally, it's a very
+    bad idea to disable this, because common filesystems/OSes will kill the
+    mpv process if it accesses file regions that could not be allocated through
+    mmap. It is provided for filesystems which lack fallocate.
+
+``--cache-dir=<path>``
+    Directory under which the ``mmap`` cache backend creates its data files.
+    The player will delete the files on exit.
+
 ``--cache-pause=<yes|no>``
     Whether the player should automatically pause when the cache runs out of
     data and stalls decoding/playback (default: yes). If enabled, it will

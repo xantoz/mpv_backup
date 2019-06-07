@@ -41,6 +41,7 @@
 #include "osdep/timer.h"
 #include "osdep/threads.h"
 
+#include "cache.h"
 #include "stream/stream.h"
 #include "demux.h"
 #include "timeline.h"
@@ -78,6 +79,9 @@ static const demuxer_desc_t *const demuxer_list[] = {
 };
 
 struct demux_opts {
+    int cache_backend;
+    char *cache_dir;
+    int cache_mmap_falloc;
     int enable_cache;
     int64_t max_bytes;
     int64_t max_bytes_bw;
@@ -100,8 +104,12 @@ struct demux_opts {
 
 const struct m_sub_options demux_conf = {
     .opts = (const struct m_option[]){
+        OPT_CHOICE("cache-backend", cache_backend, 0,
+                   ({"malloc", 0}, {"mmap", 1})),
+        OPT_STRING("cache-dir", cache_dir, 0),
         OPT_CHOICE("cache", enable_cache, 0,
                    ({"no", 0}, {"auto", -1}, {"yes", 1})),
+        OPT_FLAG("cache-mmap-fallocate", cache_mmap_falloc, 0),
         OPT_DOUBLE("demuxer-readahead-secs", min_secs, M_OPT_MIN, .min = 0),
         // (The MAX_BYTES sizes may not be accurate because the max field is
         // of double type.)
@@ -127,6 +135,7 @@ const struct m_sub_options demux_conf = {
     .size = sizeof(struct demux_opts),
     .defaults = &(const struct demux_opts){
         .enable_cache = -1, // auto
+        .cache_mmap_falloc = 1,
         .max_bytes = 150 * 1024 * 1024,
         .max_bytes_bw = 50 * 1024 * 1024,
         .min_secs = 1.0,
@@ -171,6 +180,8 @@ struct demux_internal {
 
     struct sh_stream **streams;
     int num_streams;
+
+    struct demux_cache *cache;
 
     // If non-NULL, a _selected_ stream which is used for global (timed)
     // metadata. It will be an arbitrary stream that is hopefully not sparse
@@ -228,9 +239,12 @@ struct demux_internal {
     struct demux_cached_range **ranges;
     int num_ranges;
 
-    size_t total_bytes;         // total sum of packet data buffered
+    uint64_t new_range_id;
+
+    uint64_t total_bytes;       // total sum of packet data buffered
     // Range from which decoder is reading, and to which demuxer is appending.
-    // This is never NULL. This is always ranges[num_ranges - 1].
+    // This is normally never NULL. This is always ranges[num_ranges - 1].
+    // This is can be NULL during initialization or deinitialization.
     struct demux_cached_range *current_range;
 
     double highest_av_pts;      // highest non-subtitle PTS seen - for duration
@@ -256,6 +270,8 @@ struct demux_internal {
 // A continuous range of cached packets for all enabled streams.
 // (One demux_queue for each known stream.)
 struct demux_cached_range {
+    uint64_t id;
+
     // streams[] is indexed by demux_stream->index
     struct demux_queue **streams;
     int num_streams;
@@ -289,7 +305,9 @@ struct index_entry {
 // (keeping it across seeks makes it easier to resume demuxing).
 struct demux_queue {
     struct demux_stream *ds;
-    struct demux_cached_range *range;
+    struct demux_cached_range *range; // owner
+
+    struct demux_cache_packets *cache;
 
     struct demux_packet *head;
     struct demux_packet *tail;
@@ -405,6 +423,7 @@ struct mp_packet_tags {
     struct mp_tags *sh;         // per sh_stream tags (e.g. OGG)
 };
 
+static void switch_to_fresh_cache_range(struct demux_internal *in);
 static void demuxer_sort_chapters(demuxer_t *demuxer);
 static void *demux_thread(void *pctx);
 static void update_cache(struct demux_internal *in);
@@ -440,7 +459,7 @@ static void check_queue_consistency(struct demux_internal *in)
 
             assert(queue->range == range);
 
-            size_t fw_bytes = 0;
+            uint64_t fw_bytes = 0;
             bool is_forward = false;
             bool kf_found = false;
             bool npt_found = false;
@@ -665,6 +684,9 @@ broken:
 // Remove queue->head from the queue.
 static void remove_head_packet(struct demux_queue *queue)
 {
+    struct demux_stream *ds = queue->ds;
+    struct demux_internal *in = ds->in;
+
     struct demux_packet *dp = queue->head;
 
     assert(queue->ds->reader_head != dp);
@@ -686,7 +708,8 @@ static void remove_head_packet(struct demux_queue *queue)
     if (!queue->head)
         queue->tail = NULL;
 
-    talloc_free(dp);
+    if (in->cache->fns->packets_prune)
+        in->cache->fns->packets_prune(queue->cache, dp);
 }
 
 static void free_index(struct demux_queue *queue)
@@ -698,7 +721,8 @@ static void free_index(struct demux_queue *queue)
     queue->index_size = 0;
     queue->index0 = 0;
     queue->num_index = 0;
-    TA_FREEP(&queue->index);
+    in->cache->fns->generic_realloc(in->cache, queue->index, 0);
+    queue->index = NULL;
 }
 
 static void clear_queue(struct demux_queue *queue)
@@ -706,18 +730,29 @@ static void clear_queue(struct demux_queue *queue)
     struct demux_stream *ds = queue->ds;
     struct demux_internal *in = ds->in;
 
+    if (!queue->cache)
+        return; // failed to create a queue at init; nothing good will happen
+
     if (queue->head)
         in->total_bytes -= queue->tail_cum_pos - queue->head->cum_pos;
 
     free_index(queue);
 
-    struct demux_packet *dp = queue->head;
-    while (dp) {
-        struct demux_packet *dn = dp->next;
-        assert(ds->reader_head != dp);
-        talloc_free(dp);
-        dp = dn;
+    assert(!ds->reader_head || ds->queue != queue);
+
+    if (in->cache->fns->packets_clear) {
+        in->cache->fns->packets_clear(queue->cache);
+    } else {
+        assert(in->cache->fns->packets_prune);
+
+        struct demux_packet *dp = queue->head;
+        while (dp) {
+            struct demux_packet *dn = dp->next;
+            in->cache->fns->packets_prune(queue->cache, dp);
+            dp = dn;
+        }
     }
+
     queue->head = queue->tail = NULL;
     queue->next_prune_target = NULL;
     queue->keyframe_latest = NULL;
@@ -745,17 +780,31 @@ static void clear_cached_range(struct demux_internal *in,
 // ranges.
 static void free_empty_cached_ranges(struct demux_internal *in)
 {
-    assert(in->current_range && in->num_ranges > 0);
-    assert(in->current_range == in->ranges[in->num_ranges - 1]);
-
     while (1) {
         struct demux_cached_range *worst = NULL;
 
-        for (int n = in->num_ranges - 2; n >= 0; n--) {
+        int end = in->num_ranges - 1;
+
+        // (Not set during early init or late destruction.)
+        if (in->current_range) {
+            assert(in->current_range && in->num_ranges > 0);
+            assert(in->current_range == in->ranges[in->num_ranges - 1]);
+            end -= 1;
+        }
+
+        for (int n = end; n >= 0; n--) {
             struct demux_cached_range *range = in->ranges[n];
             if (range->seek_start == MP_NOPTS_VALUE || !in->seekable_cache) {
                 clear_cached_range(in, range);
                 MP_TARRAY_REMOVE_AT(in->ranges, in->num_ranges, n);
+                for (int i = 0; i < range->num_streams; i++) {
+                    struct demux_queue *queue = range->streams[i];
+                    if (queue->cache)
+                        in->cache->fns->packets_destroy(queue->cache);
+                    talloc_free(queue->cache);
+                    talloc_free(queue);
+                }
+                talloc_free(range);
             } else {
                 if (!worst || (range->seek_end - range->seek_start <
                                worst->seek_end - worst->seek_start))
@@ -763,7 +812,7 @@ static void free_empty_cached_ranges(struct demux_internal *in)
             }
         }
 
-        if (in->num_ranges <= MAX_SEEK_RANGES)
+        if (in->num_ranges <= MAX_SEEK_RANGES || !worst)
             break;
 
         clear_cached_range(in, worst);
@@ -901,11 +950,23 @@ static void add_missing_streams(struct demux_internal *in,
     for (int n = range->num_streams; n < in->num_streams; n++) {
         struct demux_stream *ds = in->streams[n]->ds;
 
-        struct demux_queue *queue = talloc_ptrtype(range, queue);
+        struct demux_queue *queue = talloc_ptrtype(NULL, queue);
         *queue = (struct demux_queue){
             .ds = ds,
             .range = range,
+            .cache = talloc_zero(NULL, struct demux_cache_packets),
         };
+
+        queue->cache->owner = in->cache;
+        queue->cache->sh = ds->sh;
+        queue->cache->range_id = range->id;
+        if (!in->cache->fns->packets_init(in->cache, queue->cache)) {
+            MP_ERR(in, "Failed to create stream cache. Fucking up now.\n");
+            in->cache->fns->packets_destroy(queue->cache);
+            talloc_free(queue->cache);
+            queue->cache = NULL;
+        }
+
         clear_queue(queue);
         MP_TARRAY_APPEND(range, range->streams, range->num_streams, queue);
         assert(range->streams[ds->index] == queue);
@@ -977,10 +1038,12 @@ static void demux_add_sh_stream_locked(struct demux_internal *in,
     MP_TARRAY_APPEND(in, in->streams, in->num_streams, sh);
     assert(in->streams[sh->index] == sh);
 
-    for (int n = 0; n < in->num_ranges; n++)
-        add_missing_streams(in, in->ranges[n]);
+    if (in->current_range) {
+        for (int n = 0; n < in->num_ranges; n++)
+            add_missing_streams(in, in->ranges[n]);
 
-    sh->ds->queue = in->current_range->streams[sh->ds->index];
+        sh->ds->queue = in->current_range->streams[sh->ds->index];
+    }
 
     update_stream_selection_state(in, sh->ds);
 
@@ -1075,6 +1138,7 @@ int demux_get_num_stream(struct demuxer *demuxer)
     return r;
 }
 
+// It's UB to call anything but demux_dealloc() on the demuxer after this.
 static void demux_shutdown(struct demux_internal *in)
 {
     struct demuxer *demuxer = in->d_user;
@@ -1091,6 +1155,13 @@ static void demux_shutdown(struct demux_internal *in)
 
     demux_flush(demuxer);
     assert(in->total_bytes == 0);
+
+    in->current_range = NULL;
+    free_empty_cached_ranges(in);
+    if (in->cache) {
+        in->cache->fns->destroy(in->cache);
+        TA_FREEP(&in->cache);
+    }
 
     if (in->owns_stream)
         free_stream(demuxer->stream);
@@ -1575,15 +1646,22 @@ static void add_index_entry(struct demux_queue *queue, struct demux_packet *dp)
         assert(!(new_size & (new_size - 1)));
         MP_VERBOSE(in, "stream %d: resize index to %zu\n", queue->ds->index,
                    new_size);
-        // Note: we could tolerate allocation failure, and just discard the
-        // entire index (and prevent the index from being recreated).
-        MP_RESIZE_ARRAY(NULL, queue->index, new_size);
-        size_t highest_index = queue->index0 + queue->num_index;
-        for (size_t n = queue->index_size; n < highest_index; n++)
-            queue->index[n] = queue->index[n - queue->index_size];
-        in->total_bytes +=
-            (new_size - queue->index_size) * sizeof(queue->index[0]);
-        queue->index_size = new_size;
+        size_t new_byte_size = ta_calc_array_size(sizeof(queue->index[0]),
+                                                  new_size);
+        void *new = in->cache->fns->generic_realloc(in->cache, queue->index,
+                                                    new_byte_size);
+        if (new) {
+            queue->index = new;
+            size_t highest_index = queue->index0 + queue->num_index;
+            for (size_t n = queue->index_size; n < highest_index; n++)
+                queue->index[n] = queue->index[n - queue->index_size];
+            in->total_bytes +=
+                (new_size - queue->index_size) * sizeof(queue->index[0]);
+            queue->index_size = new_size;
+        } else {
+            // Seeking will just less efficiently search the packet list.
+            MP_ERR(in, "Failed to resize index.\n");
+        }
     }
 
     assert(queue->num_index < queue->index_size);
@@ -1621,6 +1699,8 @@ static void attempt_range_joining(struct demux_internal *in)
 
     if (!next)
         return;
+
+    assert(in->cache->fns->can_merge_packet_lists);
 
     MP_VERBOSE(in, "going to join ranges %f-%f + %f-%f\n",
                in->current_range->seek_start, in->current_range->seek_end,
@@ -1873,10 +1953,23 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
         drop = true;
     }
 
+    if (!queue->cache)
+        drop = true; // cache allocation failed earlier
+
     if (drop) {
         talloc_free(dp);
         return;
     }
+
+    uint64_t dp_cache_size = 1;
+    struct demux_packet *np = in->cache->fns->packets_append(queue->cache, dp,
+                                                             &dp_cache_size);
+    if (!np) {
+        MP_ERR(in, "Cannot write packet to cache, dropping it.\n");
+        talloc_free(dp);
+        return;
+    }
+    dp = np;
 
     queue->correct_pos &= dp->pos >= 0 && dp->pos > queue->last_pos;
     queue->correct_dts &= dp->dts != MP_NOPTS_VALUE && dp->dts > queue->last_dts;
@@ -1896,10 +1989,9 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
         ds->skip_to_keyframe = false;
     }
 
-    size_t bytes = demux_packet_estimate_total_size(dp);
-    in->total_bytes += bytes;
+    in->total_bytes += dp_cache_size;
     dp->cum_pos = queue->tail_cum_pos;
-    queue->tail_cum_pos += bytes;
+    queue->tail_cum_pos += dp_cache_size;
 
     if (queue->tail) {
         // next packet in stream
@@ -2117,7 +2209,7 @@ static void prune_old_packets(struct demux_internal *in)
     // prune the oldest packet runs, as long as the total cache amount is too
     // big.
     size_t max_bytes = in->seekable_cache ? in->max_bytes_bw : 0;
-    while (1) {
+    while (in->cache->fns->packets_prune) {
         uint64_t fw_bytes = 0;
         for (int n = 0; n < in->num_streams; n++) {
             struct demux_stream *ds = in->streams[n]->ds;
@@ -2390,11 +2482,9 @@ static int dequeue_packet(struct demux_stream *ds, struct demux_packet **res)
     struct demux_packet *pkt = advance_reader_head(ds);
     assert(pkt);
 
-    // The returned packet is mutated etc. and will be owned by the user.
-    pkt = demux_copy_packet(pkt);
+    pkt = in->cache->fns->packets_read(ds->queue->cache, pkt);
     if (!pkt)
-        abort();
-    pkt->next = NULL;
+        return -1; // treat it as semi-fatal
 
     if (in->back_demuxing) {
         if (pkt->keyframe) {
@@ -2821,6 +2911,24 @@ bool demux_is_network_cached(demuxer_t *demuxer)
     return use_cache;
 }
 
+static bool demux_cache_create(struct demux_internal *in,
+                               const struct demux_cache_fns *fns)
+{
+    assert(!in->cache);
+    struct demux_cache *c = talloc_zero(NULL, struct demux_cache);
+    c->fns = fns;
+    c->log = in->log;
+    c->tempdir_root = in->opts->cache_dir;
+    c->check_falloc = in->opts->cache_mmap_falloc;
+    if (c->fns->init(c)) {
+        in->cache = c;
+    } else {
+        c->fns->destroy(c);
+        talloc_free(c);
+    }
+    return !!in->cache;
+}
+
 static struct demuxer *open_given_type(struct mpv_global *global,
                                        struct mp_log *log,
                                        const struct demuxer_desc *desc,
@@ -2868,13 +2976,6 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     pthread_mutex_init(&in->lock, NULL);
     pthread_cond_init(&in->wakeup, NULL);
 
-    in->current_range = talloc_ptrtype(in, in->current_range);
-    *in->current_range = (struct demux_cached_range){
-        .seek_start = MP_NOPTS_VALUE,
-        .seek_end = MP_NOPTS_VALUE,
-    };
-    MP_TARRAY_APPEND(in, in->ranges, in->num_ranges, in->current_range);
-
     *in->d_thread = *demuxer;
 
     in->d_thread->metadata = talloc_zero(in->d_thread, struct mp_tags);
@@ -2910,6 +3011,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         fixup_metadata(in);
         in->events = DEMUX_EVENT_ALL;
         demux_update(demuxer);
+
         int seekable = opts->seekable_cache;
         if (demux_is_network_cached(demuxer)) {
             in->min_secs = MPMAX(in->min_secs, opts->min_secs_cache);
@@ -2917,6 +3019,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
                 seekable = 1;
         }
         in->seekable_cache = seekable == 1;
+
         struct demuxer *sub = NULL;
         if (!(params && params->disable_timeline)) {
             struct timeline *tl = timeline_load(global, log, demuxer);
@@ -2931,11 +3034,30 @@ static struct demuxer *open_given_type(struct mpv_global *global,
                     timeline_destroy(tl);
             }
         }
+
+        int backend = opts->cache_backend;
+
         if (!(params && params->is_top_level) || sub) {
             in->seekable_cache = false;
             in->min_secs = 0;
             in->max_bytes = 1;
+            backend = 0;
         }
+
+        if (backend == 1) {
+#if HAVE_POSIX
+            demux_cache_create(in, &demux_cache_fns_mmap);
+#endif
+            if (!in->cache)
+                MP_ERR(in, "Failed to create mmap cache, reverting to malloc.\n");
+        }
+
+        if (!in->cache)
+            demux_cache_create(in, &demux_cache_fns_malloc);
+        assert(in->cache); // malloc cache creation is guaranteed
+
+        switch_to_fresh_cache_range(in);
+
         demuxer = sub ? sub : demuxer;
         // Let this demuxer free demuxer->stream. Timeline sub-demuxers can
         // share a stream, and in these cases the demux_timeline instance
@@ -3075,23 +3197,30 @@ static void switch_current_range(struct demux_internal *in,
 
     set_current_range(in, range);
 
-    // Remove packets which can't be used when seeking back to the range.
-    for (int n = 0; n < in->num_streams; n++) {
-        struct demux_queue *queue = old->streams[n];
-
-        // Remove all packets from head up until including next_prune_target.
-        while (queue->next_prune_target)
-            remove_head_packet(queue);
-    }
-
-    // Exclude weird corner cases that break resuming.
-    for (int n = 0; n < in->num_streams; n++) {
-        struct demux_stream *ds = in->streams[n]->ds;
-        // This is needed to resume or join the range at all.
-        if (ds->selected && !(ds->global_correct_dts || ds->global_correct_pos)) {
-            MP_VERBOSE(in, "discarding unseekable range due to stream %d\n", n);
+    if (old) {
+        if (!in->cache->fns->can_merge_packet_lists)
             clear_cached_range(in, old);
-            break;
+
+        // Remove packets which can't be used when seeking back to the range.
+        for (int n = 0; n < in->num_streams; n++) {
+            struct demux_queue *queue = old->streams[n];
+
+            // Remove all packets from head up until including next_prune_target.
+            while (queue->next_prune_target)
+                remove_head_packet(queue);
+        }
+
+        // Exclude weird corner cases that break resuming.
+        for (int n = 0; n < in->num_streams; n++) {
+            struct demux_stream *ds = in->streams[n]->ds;
+            // This is needed to resume or join the range at all.
+            if (ds->selected && !(ds->global_correct_dts ||
+                                  ds->global_correct_pos))
+            {
+                MP_VERBOSE(in, "discarding unseekable range due to stream %d\n", n);
+                clear_cached_range(in, old);
+                break;
+            }
         }
     }
 
@@ -3294,13 +3423,14 @@ static void execute_cache_seek(struct demux_internal *in,
 // demuxer cache is disabled, merely reset the current range to a blank state.
 static void switch_to_fresh_cache_range(struct demux_internal *in)
 {
-    if (!in->seekable_cache) {
+    if (!in->seekable_cache && in->current_range) {
         clear_cached_range(in, in->current_range);
         return;
     }
 
-    struct demux_cached_range *range = talloc_ptrtype(in, range);
+    struct demux_cached_range *range = talloc_ptrtype(NULL, range);
     *range = (struct demux_cached_range){
+        .id = ++(in->new_range_id),
         .seek_start = MP_NOPTS_VALUE,
         .seek_end = MP_NOPTS_VALUE,
     };
