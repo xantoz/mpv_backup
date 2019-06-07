@@ -117,8 +117,8 @@ static bool mmap_file_resize(struct mmap_file *f, uint64_t new_size)
     }
 
     if (new_size > f->size) {
-        int err = posix_fallocate(f->fd, f->size, new_size);
-        if (err) {
+        int err = posix_fallocate(f->fd, f->size, new_size - f->size);
+        if (err && !p->falloc_warned) {
             // (Maybe failure should be tolerated only if
             MP_ERR(c, "Failed to allocate disk cache data (%s).\n",
                    mp_strerror(err));
@@ -143,9 +143,15 @@ static bool mmap_file_grow(struct mmap_file *f, uint64_t used, uint64_t needed)
     if (needed <= f->size - used)
         return true;
 
+#if 1
     uint64_t new_size = MPMAX(f->size, MP_PAGE_SIZE * 64);
     while (new_size < f->size + needed)
         new_size *= 2; // some growth factor
+#else
+    uint64_t new_size = used;
+    new_size += needed + MP_PAGE_SIZE * 64;
+    new_size = MP_ALIGN_UP(new_size, MP_PAGE_SIZE);
+#endif
     return mmap_file_resize(f, new_size);
 }
 
