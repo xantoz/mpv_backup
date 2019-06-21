@@ -27,13 +27,13 @@
 #include "wayland_common.h"
 
 // Generated from xdg-shell.xml
-#include "video/out/wayland/xdg-shell.h"
+#include "generated/wayland/xdg-shell.h"
 
 // Generated from idle-inhibit-unstable-v1.xml
-#include "video/out/wayland/idle-inhibit-v1.h"
+#include "generated/wayland/idle-inhibit-unstable-v1.h"
 
 // Generated from server-decoration.xml
-#include "video/out/wayland/srv-decor.h"
+#include "generated/wayland/server-decoration.h"
 
 static void xdg_shell_ping(void *data, struct xdg_wm_base *shell, uint32_t serial)
 {

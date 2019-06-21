@@ -148,7 +148,7 @@ static void *playback_thread(void *ctx_obj)
 }
 
 static const char macosx_icon[] =
-#include "osdep/macosx_icon.inc"
+#include "generated/TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns.inc"
 ;
 
 - (NSImage *)getMPVIcon

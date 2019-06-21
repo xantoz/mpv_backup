@@ -54,49 +54,34 @@ def build(ctx):
     ctx(
         features = "file2string",
         source = "TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns",
-        target = "osdep/macosx_icon.inc",
+        target = "generated/TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns.inc",
     )
 
-    ctx(
-        features = "file2string",
-        source = "etc/mpv-icon-8bit-16x16.png",
-        target = "video/out/x11_icon_16.inc",
-    )
-
-    ctx(
-        features = "file2string",
-        source = "etc/mpv-icon-8bit-32x32.png",
-        target = "video/out/x11_icon_32.inc",
-    )
-
-    ctx(
-        features = "file2string",
-        source = "etc/mpv-icon-8bit-64x64.png",
-        target = "video/out/x11_icon_64.inc",
-    )
-
-    ctx(
-        features = "file2string",
-        source = "etc/mpv-icon-8bit-128x128.png",
-        target = "video/out/x11_icon_128.inc",
-    )
+    icons = [16, 32, 64, 128]
+    for size in icons:
+        name = "etc/mpv-icon-8bit-%dx%d.png" % (size, size)
+        ctx(
+            features = "file2string",
+            source = name,
+            target = "generated/%s.inc" % name,
+        )
 
     ctx(
         features = "file2string",
         source = "etc/input.conf",
-        target = "input/input_conf.h",
+        target = "generated/etc/input.conf.inc",
     )
 
     ctx(
         features = "file2string",
         source = "etc/builtin.conf",
-        target = "player/builtin_conf.inc",
+        target = "generated/etc/builtin.conf.inc",
     )
 
     ctx(
         features = "file2string",
         source = "sub/osd_font.otf",
-        target = "sub/osd_font.h",
+        target = "generated/sub/osd_font.otf.inc",
     )
 
     lua_files = ["defaults.lua", "assdraw.lua", "options.lua", "osc.lua",
@@ -107,13 +92,13 @@ def build(ctx):
         ctx(
             features = "file2string",
             source = fn,
-            target = os.path.splitext(fn)[0] + ".inc",
+            target = "generated/%s.inc" % fn,
         )
 
     ctx(
         features = "file2string",
         source = "player/javascript/defaults.js",
-        target = "player/javascript/defaults.js.inc",
+        target = "generated/player/javascript/defaults.js.inc",
     )
 
     if ctx.dependency_satisfied('wayland'):
@@ -122,13 +107,13 @@ def build(ctx):
             target    = "video/out/wayland/xdg-shell.c")
         ctx.wayland_protocol_header(proto_dir = ctx.env.WL_PROTO_DIR,
             protocol  = "stable/xdg-shell/xdg-shell",
-            target    = "video/out/wayland/xdg-shell.h")
+            target    = "generated/wayland/xdg-shell.h")
         ctx.wayland_protocol_code(proto_dir = ctx.env.WL_PROTO_DIR,
             protocol  = "unstable/idle-inhibit/idle-inhibit-unstable-v1",
             target    = "video/out/wayland/idle-inhibit-v1.c")
         ctx.wayland_protocol_header(proto_dir = ctx.env.WL_PROTO_DIR,
             protocol  = "unstable/idle-inhibit/idle-inhibit-unstable-v1",
-            target    = "video/out/wayland/idle-inhibit-v1.h")
+            target    = "generated/wayland/idle-inhibit-unstable-v1.h")
         ctx.wayland_protocol_code(proto_dir = "video/out/wayland",
             protocol          = "server-decoration",
             vendored_protocol = True,
@@ -136,10 +121,10 @@ def build(ctx):
         ctx.wayland_protocol_header(proto_dir = "video/out/wayland",
             protocol          = "server-decoration",
             vendored_protocol = True,
-            target            = "video/out/wayland/srv-decor.h")
+            target            = "generated/wayland/server-decoration.h")
 
-    ctx(features = "ebml_header", target = "ebml_types.h")
-    ctx(features = "ebml_definitions", target = "ebml_defs.c")
+    ctx(features = "ebml_header", target = "generated/ebml_types.h")
+    ctx(features = "ebml_definitions", target = "generated/ebml_defs.c")
 
     def swift(task):
         src = ' '.join([x.abspath() for x in task.inputs])
