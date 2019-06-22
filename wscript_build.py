@@ -536,7 +536,7 @@ def build(ctx):
                 ctx.path.find_node('osdep/mpv.rc'),
                 ctx.path.find_node(node))
 
-        version = ctx.bldnode.find_node('version.h')
+        version = ctx.bldnode.find_node('generated/version.h')
         if version:
             ctx.add_manual_dependency(
                 ctx.path.find_node('osdep/mpv.rc'),
