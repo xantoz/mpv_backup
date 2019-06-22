@@ -9,6 +9,39 @@ import tempfile
 NoneType = type(None)
 function = type(lambda: 0)
 
+# TODO: handle the following environment variables
+#CC
+#CFLAGS
+#CPPFLAGS (just append to CFLAGS)
+#LDFLAGS
+#TARGET and CROSS_COMPILE (both as prefix for CC)
+
+# options (waf):
+#--bindir=BINDIR     directory for installing binary files [${PREFIX}/bin]
+#--libdir=LIBDIR     directory for installing library files [${PREFIX}/lib]
+#--confdir=CONFDIR   directory for installing configuration files [${PREFIX}/etc/mpv]
+#--incdir=INCDIR     directory for installing include files [${PREFIX}/include]
+#--datadir=DATADIR   directory for installing data files [${PREFIX}/share]
+#--mandir=MANDIR     directory for installing man pages  [${DATADIR}/man]
+#--docdir=DOCDIR     directory for installing documentation files [${DATADIR}/doc/mpv]
+#--htmldir=HTMLDIR   directory for installing html documentation files [${DOCDIR}]
+#--zshdir=ZSHDIR     directory for installing zsh completion functions [${DATADIR}/zsh
+#                    /site-functions]
+#--confloaddir=CONFLOADDIR
+#                    directory for installing configuration files load directory
+#                    [${CONFDIR}]
+
+#also missing:
+#- general program finding (CC, wayland-scanner, ...?)
+#- actually support out of tree builds
+#- libmpv
+#- doc generation
+#- windows testing (needs exe suffix crap at least)
+#- osx testing
+#- swift stuff (impossible, craple wants you to stick a dagger up your ass)
+#- zsh generation
+#- building tests
+
 class _G:
     help_mode = False   # set if --help is specified on the command line
 
@@ -20,6 +53,7 @@ class _G:
     ldflags = []
 
     config_h = ""       # new contents of config.h (written at the end)
+    config_mak = ""     # new contents of config.mak (written at the end)
 
     sources = []
 
@@ -32,18 +66,28 @@ class _G:
                         #   "default": default (same as option not given)
 
     dep_enabled = {}    # keyed by dependency identifier; value is a bool
+                        # missing key means the check was not run yet
 
 
 # Convert a string to a C string literal. Adds the required "".
-def _c_string(s):
+def _c_quote_string(s):
     s = s.replace("\\", "\\\\")
     s = s.replace("\"", "\\\"")
     return "\"%s\"" % s
 
+# Convert a string to a make variable.
+def _c_quote_makefile_var(s):
+    s = s.replace("\\", "\\\\")
+    s = s.replace("\"", "\\\"")
+    s = s.replace("$", "\\$")
+    s = s.replace(" ", "\ ") # probably
+    return s
+
 def die(msg):
     sys.stderr.write("Fatal error: %s\n" % msg)
     sys.stderr.write("Not updating build files.\n")
-    _G.log_file.write("--- Stopping due to error: %s\n" % msg)
+    if _G.log_file:
+        _G.log_file.write("--- Stopping due to error: %s\n" % msg)
     sys.exit(1)
 
 # To be called before any user checks are performed.
@@ -139,17 +183,14 @@ def normalize_list_arg(val):
     return [val]
 
 def push_build_flags():
-    _G.state_stack.append(Struct(
-        cflags = _G.cflags[:],
-        ldflags = _G.ldflags[:],
-    ))
+    _G.state_stack.append(
+        (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak))
 
 def pop_build_flags_discard():
     top = _G.state_stack[-1]
     _G.state_stack = _G.state_stack[:-1]
 
-    _G.cflags = top.cflags
-    _G.ldflags = top.ldflags
+    (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak) = top
 
 def pop_build_flags_merge():
     top = _G.state_stack[-1]
@@ -195,6 +236,8 @@ def pop_build_flags_merge():
 #       Note that this needs to be a function. If not, it'd be run before the
 #       check() function is even called. That would mean the function runs even
 #       if the check was disabled, and could add unneeded things to CFLAGS.
+#       If this function returns False, all added build flags are removed again,
+#       which makes it easy to compose checks.
 #   sources: String, Array of Strings, or None.
 #            If the check is enabled, add these sources to the build.
 #   required: String or None. If this is a string, the check is required, and
@@ -285,6 +328,9 @@ def check(name = None, option = None, desc = None, deps = None, deps_any = None,
         outcome = "disabled"
 
     # Dependency resolution.
+    # But first, check whether all dependency identifiers really exist.
+    for d in deps_neg + deps_any + deps:
+        dep_enabled(d) # discard result
     if use_dep:
         for d in deps_neg:
             if dep_enabled(d):
@@ -348,8 +394,10 @@ def _run_process(args):
     # a PITA (think power drill in anus) to consistently use byte strings, so
     # we need to use "unicode" strings. Yes, a bad program could just blow up
     # our butt here by outputting invalid UTF-8.
-    p_out = p_out.decode("utf-8")
-    p_err = p_err.decode("utf-8")
+    # Weakly support Python 2 too (gcc outputs UTF-8, which crashes Python 2).
+    if type(b"") != str:
+        p_out = p_out.decode("utf-8")
+        p_err = p_err.decode("utf-8")
     status = p.wait()
     _G.log_file.write("--- Command: %s\n" % " ".join(args))
     if p_out:
@@ -447,6 +495,15 @@ def check_pkg_config(*args):
     _G.ldflags += ldflags.split()
     return True
 
+def get_pkg_config_variable(arg, varname):
+    typecheck(arg, str)
+    pkg_config_cmd = ["pkg-config"]
+
+    res = _run_process(pkg_config_cmd + ["--variable=" + varname] + [arg])
+    if res is not None:
+        res = res.strip()
+    return res
+
 # Return whether all passed dependency identifiers are fulfilled.
 def dep_enabled(*deps):
     for d in deps:
@@ -465,10 +522,17 @@ def add_cflags(*fl):
 # If val is None, it's defined without value.
 def add_config_h_define(name, val):
     if type(val) == type("") or type(val) == type(b""):
-        val = _c_string(val)
+        val = _c_quote_string(val)
     if val is None:
         val = ""
     _G.config_h += "#define %s %s\n" % (name, val)
+
+# Add a makefile variable of the given name to config.mak.
+# If val is a string, it's quoted as string literal.
+def add_config_mak_var(name, val):
+    if type(val) == type("") or type(val) == type(b""):
+        val = _c_quote_makefile_var(val)
+    _G.config_mak += "%s = %s\n" % (name, val)
 
 # Add these source files to the build.
 def add_sources(*sources):
@@ -483,6 +547,9 @@ def finish():
             is_fatal = True
     if is_fatal:
         die("Unknown feature was force-enabled.")
+
+    if not is_running():
+        return
 
     _G.config_h += "\n"
     add_config_h_define("CONFIGURATION", " ".join(sys.argv))
@@ -499,10 +566,27 @@ def finish():
     config_mak += "LDFLAGS = %s\n" % " ".join(_G.ldflags)
     config_mak += "\n"
 
+    sources = []
+    for s in _G.sources:
+        # Prefix all source files with "$(ROOT)/". This is important for out of
+        # tree builds, where configure/make is run from "somewhere else", and
+        # not the source directory.
+        # Generated sources need to be prefixed with "$(BUILD)/" (for the same
+        # reason). Since we do not know whether a source file is generated, the
+        # convention is that the user takes care of prefixing it.
+        if not s.startswith("$(BUILD)"):
+            assert not s.startswith("$") # no other variables which make sense
+            assert not s.startswith("generated/") # requires $(BUILD) prefix
+            s = "$(ROOT)/%s" % s
+        sources.append(s)
+
     config_mak += "SOURCES = \\\n"
-    for s in sorted(list(set(_G.sources))):
+    for s in sorted(list(set(sources))):
         config_mak += "   %s \\\n" % s
+
     config_mak += "\n"
+
+    config_mak += _G.config_mak
 
     with open(os.path.join(_G.build_dir, "config.mak"), "w") as f:
         f.write(config_mak)
@@ -522,7 +606,7 @@ def is_running():
 def pick_first_matching_dep(*deps):
     winner = None
     for e in  deps:
-        if (e[0] == "_" or dep_enabled(e[0])) and (winner is not None):
+        if (e[0] == "_" or dep_enabled(e[0])) and (winner is None):
             # (the odd indirection though winner is so that all dependency
             #  identifiers are checked for existence)
             winner = e[1:]

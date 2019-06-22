@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 from TOOLS.configure_common import *
 
 begin()
@@ -16,25 +17,31 @@ check("gpl*",
       deps_neg  = "lgpl")
 check("-build-date*",
       desc      = "whether to include binary compile time")
+if is_running() and not dep_enabled("build-date"):
+    add_cflags("-DNO_BUILD_TIMESTAMPS")
 
 check("-cplayer",
       desc      = "mpv CLI player binary")
 check("-libmpv-shared",
       desc      = "libmpv shared library",
+      fn        = lambda: check_cc(flags = "-fPIC"),
+        #'-Wl,-version-script', '-Wl,mpv.def
       default   = False)
 check("-libmpv-static",
       desc      = "libmpv static library",
+      fn        = lambda: check_cc(flags = "-fPIC"),
       default   = False,
       deps_neg  = "libmpv-shared")
 
-check("compiler",
-      fn        = lambda: check_cc(link = []))
-
-add_cflags("-D_ISOC99_SOURCE", "-D_GNU_SOURCE",
+add_cflags("-MD", "-MP", "-D_ISOC99_SOURCE", "-D_GNU_SOURCE",
            "-D_LARGEFILE_SOURCE", "-D_FILE_OFFSET_BITS=64",
            "-D_LARGEFILE64_SOURCE",
            "-Wall")
-check(fn        = lambda: check_cc(flags = "-std=c11") or
+check("compiler",
+      fn        = lambda: check_cc(link = []))
+
+check(desc      = "C11/C99",
+      fn        = lambda: check_cc(flags = "-std=c11") or
                           check_cc(flags = "-std=c99"),
       required  = "No C11 or C99 support.")
 check("-optimize",
@@ -64,6 +71,11 @@ check("gnuc",
       fn        = lambda: check_cc(defined = "__GNUC__"))
 check("clang",
       fn        = lambda: check_cc(defined = "__clang__"))
+
+# Note that an important reason to try different set of warning flags is the
+# fact that both compilers may have different bogus behavior wrt. certain
+# warning options. What is needed on one compiler may be annoying or dangerous
+# on the other.
 check(desc      = "extra gcc warnings",
       deps      = "gnuc",
       deps_neg  = "clang",
@@ -80,9 +92,9 @@ check(desc      = "extra clang warnings",
                         "-Wno-tautological-compare",
                         "-Wno-tautological-constant-out-of-range-compare"]))
 
-check("libdl",
+check("libdl*",
       fn        = lambda: check_cc(link = "-ldl", include = "dlfcn.h",
-                                   expr = "dlopen("", 0);"))
+                                   expr = 'dlopen("", 0);'))
 check("libm",
       fn        = lambda: check_cc(link = "-lm"))
 check("win32",
@@ -109,15 +121,15 @@ check("development environment",
       deps_any  = ["posix", "mingw"],
       required  = "Unable to find either POSIX or MinGW-w64 environment.")
 
-check("--cplugins*",
+check("-cplugins*",
       desc      = "C plugins",
       deps      = "libdl",
       deps_neg  = "win32",
       fn        = lambda: check_cc(link = "-rdynamic"))
 
-check("win-noexecstack",
-      deps      = "win32",
+check("noexecstack",
       fn        = lambda: check_cc(link = "-Wl,-z,noexecstack"))
+
 check("win-dep",
       deps      = "win32",
       fn        = lambda: check_cc(link = ["-Wl,--nxcompat", "-Wl,--no-seh", "-Wl,--dynamicbase"]))
@@ -157,7 +169,7 @@ check("pthreads",
                                    include = "pthread.h",
                                    expr = "pthread_self();"),
       required  = "Unable to find pthreads support.")
-check("stdatomic",
+check("stdatomic*",
       fn        = lambda: check_cc(include = "stdatomic.h",
                                    expr =
                         "atomic_int_least64_t test = ATOMIC_VAR_INIT(123);"
@@ -190,7 +202,7 @@ check("posix-spawn-android",
 check("posix-spawn",
       desc      = "any spawnp()/kill() support",
       deps_any  = ["posix-spawn-native", "posix-spawn-android"])
-check("win32-pipes",
+check("win32-pipes*",
       deps_neg  = "posix",
       deps      = "win32-desktop",
       sources   = "input/pipe-win32.c")
@@ -205,7 +217,7 @@ check("glob-win32",
       deps_neg  = "glob-posix",
       deps      = "win32",
       sources   = "osdep/glob-win.c"),
-check("glob",
+check("glob*",
       desc      = "any glob() support",
       deps_any  = ["glob-posix", "glob-win32"])
 check("fchmod*",
@@ -219,10 +231,10 @@ check("osx-thread-name*",
 check("bsd-thread-name*",
       fn        = lambda: check_cc(include = "pthread.h",
                     expr = 'pthread_set_name_np(pthread_self(), "ducks");'))
-check("bsd-fstatfs",
+check("bsd-fstatfs*",
       fn        = lambda: check_cc(include = ["sys/param.h", "sys/mount.h"],
                     expr = "struct statfs fs; fstatfs(0, &fs); fs.f_fstypename;"))
-check("linux-fstatfs",
+check("linux-fstatfs*",
       fn        = lambda: check_cc(include = "sys/vfs.h",
                     expr = "struct statfs fs; fstatfs(0, &fs); fs.f_namelen;"))
 check("-libsmbclient*",
@@ -246,7 +258,7 @@ check("-lua*",
 check("-javascript*",
       fn        = lambda: check_pkg_config("mujs", ">= 1.0.0"),
       sources   = "player/javascript.c")
-check("-libass",
+check("-libass*",
       desc      = "libass subtitle/OSD renderer",
       fn        = lambda: check_pkg_config("libass >= 0.12.1"),
       required  = "Unable to find development files for libass, or the version " +
@@ -309,7 +321,7 @@ FFmpeg/Libav libraries.")
 
 add_config_h_define("HAVE_LIBAV", 0)
 
-check("libavdevice",
+check("libavdevice*",
       fn        = lambda: check_pkg_config("libavdevice >= 57.0.0"))
 
 check("-sdl2*",
@@ -387,13 +399,23 @@ check(deps      = ["drm", "drmprime"],
 check("gbm",
       fn        = lambda: check_pkg_config("gbm"))
 
+def check_wayland_protos():
+    data = get_pkg_config_variable("wayland-protocols", "pkgdatadir")
+    if data is None:
+        return False
+    add_config_mak_var("WL_PROTO_DIR", data)
+    return True
+
 check("-wayland*",
-      # TODO: dumb wayland protocol generation shit
-      fn        = lambda: False,
-      sources   = ["video/out/wayland/idle-inhibit-v1.c",
-                   "video/out/wayland/srv-decor.c",
-                   "video/out/wayland/xdg-shell.c",
-                   "video/out/wayland_common.c"])
+      fn        = lambda: check_wayland_protos() and
+                          #check_wayland_scanner() and
+                          check_pkg_config("wayland-client  >= 1.6.0",
+                                           "wayland-cursor  >= 1.6.0",
+                                           "xkbcommon       >= 0.3.0"),
+      sources   = ["video/out/wayland_common.c",
+                   "$(BUILD)/generated/wayland/xdg-shell.c",
+                   "$(BUILD)/generated/wayland/idle-inhibit-unstable-v1.c",
+                   "$(BUILD)/generated/wayland/server-decoration.c"])
 
 check("-x11*",
       deps      = "gpl",
@@ -404,7 +426,7 @@ check("-x11*",
                                            "xrandr      >= 1.2.0"),
       sources   = ["video/out/vo_x11.c",
                    "video/out/x11_common.c"])
-check("-xv",
+check("-xv*",
       deps      = "x11",
       fn        = lambda: check_pkg_config("xv"),
       sources   = "video/out/vo_xv.c")
@@ -531,7 +553,7 @@ check("-shaderc-static",
       deps_neg  = "shaderc-shared",
       fn        = lambda: check_cc(include = "shaderc/shaderc.h",
                                    link = ["-lshaderc_combined", "-lstdc++"]))
-check("shaderc",
+check("shaderc*",
       desc      = "libshaderc SPIR-V compiler",
       deps_any  = ["shaderc-shared", "shaderc-static"],
       sources   = "video/out/gpu/spirv_shaderc.c")
@@ -552,7 +574,7 @@ check("-rpi*",
       sources   = ["video/out/opengl/context_rpi.c",
                    "video/out/opengl/hwdec_rpi.c",
                    "video/out/vo_rpi.c"])
-check("-ios-gl",
+check("-ios-gl*",
       desc      = "iOS OpenGL ES hardware decoding interop support",
       fn        = lambda: check_cc(include = "OpenGLES/ES3/glext.h",
                                    expr = "(void)GL_RGB32F;"),  # arbitrary OpenGL ES 3.0 symbol
@@ -595,7 +617,7 @@ check("egl-helpers*",
                    "egl-angle-win32", "android"],
       sources   = "video/out/opengl/egl_helpers.c")
 
-check("videotoolbox-hwaccel",
+check("videotoolbox-hwaccel*",
       desc      = "libavcodec videotoolbox hwaccel",
       deps_any  = ["gl-cocoa", "ios-gl"])
 check("-videotoolbox-gl*",
@@ -708,6 +730,7 @@ add_sources(
     "demux/ebml.c",
     "demux/packet.c",
     "demux/timeline.c",
+    "filters/filter.c",
     "filters/f_auto_filters.c",
     "filters/f_autoconvert.c",
     "filters/f_decoder_wrapper.c",
@@ -718,7 +741,6 @@ add_sources(
     "filters/f_swresample.c",
     "filters/f_swscale.c",
     "filters/f_utils.c",
-    "filters/filter.c",
     "filters/frame.c",
     "filters/user_filters.c",
     "input/cmd.c",
@@ -841,7 +863,7 @@ if is_running():
     pick_first_matching_dep(
         ("win32",               "osdep/timer-win2.c"),
         ("osx",                 "osdep/timer-darwin.c"),
-        ("posix",               "osdep/timer-linux.c"),
+        ("_",                   "osdep/timer-linux.c"),
     )
 
     pick_first_matching_dep(

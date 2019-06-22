@@ -1,0 +1,80 @@
+include build/config.mak
+include TOOLS/makefile_common.mak
+
+.PHONY: .force .version
+
+$(BUILD)/version.h .version: $(ROOT)/version.sh
+	$(Q) $(ROOT)/version.sh --versionh=$(BUILD)/version.h
+
+# force calling version.sh at entry
+-include .version
+
+$(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c: $(ROOT)/TOOLS/matroska.py
+	$(LOG) "EBML" "$(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c"
+	$(Q) mkdir -p $(@D)
+	$(Q) $< --generate-header > $(BUILD)/generated/ebml_types.h
+	$(Q) $< --generate-definitions > $(BUILD)/generated/ebml_defs.c
+
+$(BUILD)/generated/%.inc: $(ROOT)/TOOLS/file2string.py $(ROOT)/%
+	$(LOG) "INC" $@
+	$(Q) mkdir -p $(@D)
+	$(Q) $^ > $@
+
+# Dependencies for generated files unfortunately need to be declared manually.
+# This is because dependency scanning is a gross shitty hack by concept, and
+# requires that the compiler successfully compiles a file to get its
+# dependencies. This results in a chicken-and-egg problem, and in conclusion
+# it works for static header files only.
+# If any headers include generated headers, you need to manually set
+# dependencies on all source files that include these headers!
+
+$(ROOT)/common/version.c: $(BUILD)/version.h
+
+$(ROOT)/demux/demux_mkv.c $(ROOT)/demux/ebml.c $(ROOT)/demux/ebml.h: \
+    $(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c
+
+$(ROOT)/video/out/x11_common.c: $(BUILD)/generated/etc/mpv-icon-8bit-16x16.png.inc \
+                                $(BUILD)/generated/etc/mpv-icon-8bit-32x32.png.inc \
+                                $(BUILD)/generated/etc/mpv-icon-8bit-64x64.png.inc \
+                                $(BUILD)/generated/etc/mpv-icon-8bit-128x128.png.inc
+
+$(ROOT)/input/input.c: $(BUILD)/generated/etc/input.conf.inc
+
+$(ROOT)/player/main.c: $(BUILD)/generated/etc/builtin.conf.inc
+
+$(ROOT)/sub/osd_libass.c: $(BUILD)/generated/sub/osd_font.otf.inc
+
+$(ROOT)/player/lua.c: $(BUILD)/generated/player/lua/defaults.lua.inc \
+                      $(BUILD)/generated/player/lua/assdraw.lua.inc \
+                      $(BUILD)/generated/player/lua/options.lua.inc \
+                      $(BUILD)/generated/player/lua/osc.lua.inc \
+                      $(BUILD)/generated/player/lua/ytdl_hook.lua.inc \
+                      $(BUILD)/generated/player/lua/stats.lua.inc
+
+$(ROOT)/player/javascript.c: $(BUILD)/generated/player/javascript/defaults.js.inc
+
+$(ROOT)/osdep/macosx_application.m $(ROOT)/video/out/cocoa_common.m: \
+    $(BUILD)/generated/TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns.inc
+
+# Why doesn't wayland just provide fucking libraries like anyone else, instead
+# of overly complex XML generation bullshit?
+# And fuck make too.
+
+# $(1): the name of the protocol, without path or extension
+# $(2): path prefix to the protocol, $(2)/$(1).xml is the full path.
+define generate_trash =
+$$(ROOT)/video/out/wayland_common.c: $$(BUILD)/generated/wayland/$(1).c \
+                                     $$(BUILD)/generated/wayland/$(1).h
+$$(BUILD)/generated/wayland/$(1).c: $(2)/$(1).xml
+	$$(LOG) "WAYSHC" $$@
+	$$(Q) mkdir -p $$(@D)
+	$$(Q) wayland-scanner code $$< $$@
+$$(BUILD)/generated/wayland/$(1).h: $(2)/$(1).xml
+	$$(LOG) "WAYSHH" $$@
+	$$(Q) mkdir -p $$(@D)
+	$$(Q) wayland-scanner client-header $$< $$@
+endef
+
+$(eval $(call generate_trash,xdg-shell,$(WL_PROTO_DIR)/stable/xdg-shell/))
+$(eval $(call generate_trash,idle-inhibit-unstable-v1,$(WL_PROTO_DIR)/unstable/idle-inhibit/))
+$(eval $(call generate_trash,server-decoration,$(ROOT)/video/out/wayland/))
