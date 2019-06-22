@@ -16,9 +16,14 @@ check("gpl*",
       desc      = "GPL (version 2 or later) build",
       deps_neg  = "lgpl")
 check("-build-date*",
-      desc      = "whether to include binary compile time")
-if is_running() and not dep_enabled("build-date"):
-    add_cflags("-DNO_BUILD_TIMESTAMPS")
+      desc      = "whether to include binary compile time",
+      fn        = lambda: chain(add_cflags("-DNO_BUILD_TIMESTAMPS"), True))
+check(desc      = "whether compiler works",
+      required  = "C compiler missing or broken",
+      fn        = lambda: check_program("CC") and check_cc(link = []))
+check(desc      = "pkg-config",
+      required  = "pkg-config missing or broken",
+      fn        = lambda: check_program("PKG_CONFIG"))
 
 check("-cplayer",
       desc      = "mpv CLI player binary")
@@ -29,7 +34,6 @@ check("-libmpv-shared",
       default   = False)
 check("-libmpv-static",
       desc      = "libmpv static library",
-      fn        = lambda: check_cc(flags = "-fPIC"),
       default   = False,
       deps_neg  = "libmpv-shared")
 
@@ -37,9 +41,6 @@ add_cflags("-MD", "-MP", "-D_ISOC99_SOURCE", "-D_GNU_SOURCE",
            "-D_LARGEFILE_SOURCE", "-D_FILE_OFFSET_BITS=64",
            "-D_LARGEFILE64_SOURCE",
            "-Wall")
-check("compiler",
-      fn        = lambda: check_cc(link = []))
-
 check(desc      = "C11/C99",
       fn        = lambda: check_cc(flags = "-std=c11") or
                           check_cc(flags = "-std=c99"),
@@ -99,17 +100,23 @@ check("libm",
       fn        = lambda: check_cc(link = "-lm"))
 check("win32",
       fn        = lambda: check_cc(defined = "_WIN32",
-                    flags = ["-D_WIN32_WINNT=0x0602", "-DUNICODE", "-DCOBJMACROS",
-                             "-DINITGUID", "-U__STRICT_ANSI__",
-                             "-municode", "-D__USE_MINGW_ANSI_STDIO=1"],
-                    link = ["-Wl,--major-os-version=6,--minor-os-version=0",
-                 "-Wl,--major-subsystem-version=6,--minor-subsystem-version=0",
-                 "-municode", "-mwindows"]),
-      sources   = ["osdep/w32_keyboard.c",
+                        flags = ["-D_WIN32_WINNT=0x0602", "-DUNICODE", "-DCOBJMACROS",
+                                 "-DINITGUID", "-U__STRICT_ANSI__",
+                                 "-D__USE_MINGW_ANSI_STDIO=1"],
+                        include = "windows.h",
+                        link = ["-Wl,--major-os-version=6,--minor-os-version=0",
+                                "-Wl,--major-subsystem-version=6,--minor-subsystem-version=0",
+                                "-mwindows"]) and
+                    check_program("WINDRES") and
+                    chain(set_exe_format("pe"), True),
+      sources   = ["osdep/mpv.rc",
+                   "osdep/w32_keyboard.c",
                    "osdep/windows_utils.c"])
 
 check("osx",
-      fn        = lambda: check_cc(defined = "__APPLE__"))
+      fn        = lambda: check_cc(defined = "__APPLE__") and
+                          chain(set_exe_format("macho"), True))
+
 check("mingw",
       fn        = lambda: check_cc(include = "stdlib.h",
                                    defined = ["__MINGW32__", "__MINGW64_VERSION_MAJOR"]))
@@ -160,14 +167,26 @@ check("win32-desktop*",
                    "video/out/w32_common.c",
                    "video/out/win32/displayconfig.c",
                    "video/out/win32/droptarget.c"])
+def check_vista_pthreads():
+    path = os.path.abspath(os.path.join(get_root_dir(), "osdep/win32/include"))
+    add_cflags("-I%s" % path)
+    add_cflags("-isystem%s" % path)
+    # define IN_WINPTHREAD to workaround mingw stupidity (we never want it
+    # to define features specific to its own pthread stuff)
+    add_cflags("-DIN_WINPTHREAD")
+    return True
 check("-win32-internal-pthreads*",
       deps      = "win32",
       deps_neg  = "posix",
+      fn        = lambda: check_vista_pthreads(),
       sources   = "osdep/win32/pthread.c")
 check("pthreads",
+      deps_neg  = "win32-internal-pthreads",
       fn        = lambda: check_cc(link = "-pthread", flags = "-pthread",
                                    include = "pthread.h",
-                                   expr = "pthread_self();"),
+                                   expr = "pthread_self();"))
+check(desc      = "any pthread support",
+      deps_any  = ["pthreads", "win32-internal-pthreads"],
       required  = "Unable to find pthreads support.")
 check("stdatomic*",
       fn        = lambda: check_cc(include = "stdatomic.h",
@@ -321,7 +340,7 @@ FFmpeg/Libav libraries.")
 
 add_config_h_define("HAVE_LIBAV", 0)
 
-check("libavdevice*",
+check("-libavdevice*",
       fn        = lambda: check_pkg_config("libavdevice >= 57.0.0"))
 
 check("-sdl2*",
@@ -408,7 +427,7 @@ def check_wayland_protos():
 
 check("-wayland*",
       fn        = lambda: check_wayland_protos() and
-                          #check_wayland_scanner() and
+                          check_program("WAYSCAN") and
                           check_pkg_config("wayland-client  >= 1.6.0",
                                            "wayland-cursor  >= 1.6.0",
                                            "xkbcommon       >= 0.3.0"),
@@ -663,12 +682,6 @@ check(deps      = ["vulkan", "win32-desktop"],
 check(deps      = ["vulkan", "x11"],
       sources   = "video/out/vulkan/context_xlib.c")
 
-check("win32-executable",
-      deps      = "win32",
-      # TODO
-      fn        = lambda: False,
-      sources   = "osdep/mpv.rc")
-
 check("-apple-remote*",
       desc      = "Apple Remote support",
       deps      = "cocoa",
@@ -682,7 +695,6 @@ check("-macos-touchbar*",
 check("-macos-cocoa-cb*",
       desc      = "macOS opengl-cb backend",
       deps      = "cocoa")
-
 
 add_sources(
     "audio/aframe.c",

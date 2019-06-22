@@ -4,23 +4,19 @@ else
 Q = @
 endif
 
-CC = cc
-
-ROOT = .
-BUILD = build
-
 CFLAGS := -I$(ROOT) -I$(BUILD) $(CFLAGS)
 
 OBJECTS = $(SOURCES:.c=.o)
+OBJECTS := $(OBJECTS:.rc=.o)
 
 TARGET = mpv
 
 # The /./ -> / is for cosmetic reasons.
 BUILD_OBJECTS = $(subst /./,/,$(addprefix $(BUILD)/, $(OBJECTS)))
 
-BUILD_TARGET = $(addprefix $(BUILD)/, $(TARGET))
+BUILD_TARGET = $(addprefix $(BUILD)/, $(TARGET))$(EXESUF)
 BUILD_DEPS = $(BUILD_OBJECTS:.o=.d)
-CLEAN_FILES += $(BUILD_OBJECTS)
+CLEAN_FILES += $(BUILD_OBJECTS) $(BUILD_DEPS) $(BUILD_TARGET)
 
 LOG = $(Q) printf "%s\t%s\n"
 
@@ -32,6 +28,7 @@ clean:
 	$(LOG) "CLEAN"
 	$(Q) rm -f $(CLEAN_FILES)
 	$(Q) rm -rf $(BUILD)/generated/
+	$(Q) (rmdir $(BUILD)/*/*/*  $(BUILD)/*/* $(BUILD)/*) 2> /dev/null || true
 
 dist-clean:
 	$(LOG) "DIST-CLEAN"
@@ -44,9 +41,14 @@ $(BUILD)/%.o: %.c
 	$(Q) mkdir -p $(@D)
 	$(Q) $(CC) $(CFLAGS) $< -c -o $@
 
+$(BUILD)/%.o: %.rc
+	$(LOG) "WINRC" "$@"
+	$(Q) mkdir -p $(@D)
+	$(Q) $(WINDRES) -I$(ROOT) -I$(BUILD) $< $@
+
 $(BUILD_TARGET): $(BUILD_OBJECTS)
 	$(LOG) "LINK" "$@"
-	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(BUILD_OBJECTS)
+	$(Q) $(CC) $(BUILD_OBJECTS) $(CFLAGS) $(LDFLAGS) -o $@
 
 .PHONY: all clean .pregen
 

@@ -16,6 +16,8 @@ if os.path.exists("waf"):
         print("Found 'waf', skipping download.")
         sys.exit(0)
 
+print("Note: the new build system (./configure && make) does not need this.")
+
 try:
     from urllib.request import urlopen, URLError
 except:

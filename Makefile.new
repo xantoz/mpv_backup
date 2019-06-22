@@ -1,13 +1,14 @@
 include build/config.mak
-include TOOLS/makefile_common.mak
+include $(ROOT)/TOOLS/makefile_common.mak
 
-.PHONY: .force .version
+PROJNAME = mpv
 
-$(BUILD)/version.h .version: $(ROOT)/version.sh
-	$(Q) $(ROOT)/version.sh --versionh=$(BUILD)/version.h
+.PHONY: .force
 
-# force calling version.sh at entry
--include .version
+$(BUILD)/generated/version.h: $(ROOT)/version.sh .force
+	$(LOG) "VERSION" $@
+	$(Q) mkdir -p $(@D)
+	$(Q) $(ROOT)/version.sh --versionh=$@
 
 $(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c: $(ROOT)/TOOLS/matroska.py
 	$(LOG) "EBML" "$(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c"
@@ -27,33 +28,40 @@ $(BUILD)/generated/%.inc: $(ROOT)/TOOLS/file2string.py $(ROOT)/%
 # it works for static header files only.
 # If any headers include generated headers, you need to manually set
 # dependencies on all source files that include these headers!
+# And because make is fucking shit, you actually need to set these on all files
+# that are generated from these sources, instead of the source files. Make rules
+# specify recipes, not dependencies.
+# (Possible counter measures: always generate them with an order dependency, or
+#  introduce separate dependency scanner step for creating .d files.)
 
-$(ROOT)/common/version.c: $(BUILD)/version.h
+$(BUILD)/common/version.o: $(BUILD)/generated/version.h
 
-$(ROOT)/demux/demux_mkv.c $(ROOT)/demux/ebml.c $(ROOT)/demux/ebml.h: \
+$(BUILD)/osdep/mpv.o: $(BUILD)/generated/version.h
+
+$(BUILD)/demux/demux_mkv.o $(BUILD)/demux/ebml.o: \
     $(BUILD)/generated/ebml_types.h $(BUILD)/generated/ebml_defs.c
 
-$(ROOT)/video/out/x11_common.c: $(BUILD)/generated/etc/mpv-icon-8bit-16x16.png.inc \
-                                $(BUILD)/generated/etc/mpv-icon-8bit-32x32.png.inc \
-                                $(BUILD)/generated/etc/mpv-icon-8bit-64x64.png.inc \
-                                $(BUILD)/generated/etc/mpv-icon-8bit-128x128.png.inc
+$(BUILD)/video/out/x11_common.o: $(BUILD)/generated/etc/mpv-icon-8bit-16x16.png.inc \
+                                 $(BUILD)/generated/etc/mpv-icon-8bit-32x32.png.inc \
+                                 $(BUILD)/generated/etc/mpv-icon-8bit-64x64.png.inc \
+                                 $(BUILD)/generated/etc/mpv-icon-8bit-128x128.png.inc
 
-$(ROOT)/input/input.c: $(BUILD)/generated/etc/input.conf.inc
+$(BUILD)/input/input.o: $(BUILD)/generated/etc/input.conf.inc
 
-$(ROOT)/player/main.c: $(BUILD)/generated/etc/builtin.conf.inc
+$(BUILD)/player/main.o: $(BUILD)/generated/etc/builtin.conf.inc
 
-$(ROOT)/sub/osd_libass.c: $(BUILD)/generated/sub/osd_font.otf.inc
+$(BUILD)/sub/osd_libass.o: $(BUILD)/generated/sub/osd_font.otf.inc
 
-$(ROOT)/player/lua.c: $(BUILD)/generated/player/lua/defaults.lua.inc \
-                      $(BUILD)/generated/player/lua/assdraw.lua.inc \
-                      $(BUILD)/generated/player/lua/options.lua.inc \
-                      $(BUILD)/generated/player/lua/osc.lua.inc \
-                      $(BUILD)/generated/player/lua/ytdl_hook.lua.inc \
-                      $(BUILD)/generated/player/lua/stats.lua.inc
+$(BUILD)/player/lua.o: $(BUILD)/generated/player/lua/defaults.lua.inc \
+                       $(BUILD)/generated/player/lua/assdraw.lua.inc \
+                       $(BUILD)/generated/player/lua/options.lua.inc \
+                       $(BUILD)/generated/player/lua/osc.lua.inc \
+                       $(BUILD)/generated/player/lua/ytdl_hook.lua.inc \
+                       $(BUILD)/generated/player/lua/stats.lua.inc
 
-$(ROOT)/player/javascript.c: $(BUILD)/generated/player/javascript/defaults.js.inc
+$(BUILD)/player/javascript.o: $(BUILD)/generated/player/javascript/defaults.js.inc
 
-$(ROOT)/osdep/macosx_application.m $(ROOT)/video/out/cocoa_common.m: \
+$(BUILD)/osdep/macosx_application.m $(BUILD)/video/out/cocoa_common.m: \
     $(BUILD)/generated/TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns.inc
 
 # Why doesn't wayland just provide fucking libraries like anyone else, instead
@@ -63,16 +71,16 @@ $(ROOT)/osdep/macosx_application.m $(ROOT)/video/out/cocoa_common.m: \
 # $(1): the name of the protocol, without path or extension
 # $(2): path prefix to the protocol, $(2)/$(1).xml is the full path.
 define generate_trash =
-$$(ROOT)/video/out/wayland_common.c: $$(BUILD)/generated/wayland/$(1).c \
-                                     $$(BUILD)/generated/wayland/$(1).h
+$$(BUILD)/video/out/wayland_common.o: $$(BUILD)/generated/wayland/$(1).c \
+                                      $$(BUILD)/generated/wayland/$(1).h
 $$(BUILD)/generated/wayland/$(1).c: $(2)/$(1).xml
 	$$(LOG) "WAYSHC" $$@
 	$$(Q) mkdir -p $$(@D)
-	$$(Q) wayland-scanner code $$< $$@
+	$$(Q) $$(WAYSCAN) code $$< $$@
 $$(BUILD)/generated/wayland/$(1).h: $(2)/$(1).xml
 	$$(LOG) "WAYSHH" $$@
 	$$(Q) mkdir -p $$(@D)
-	$$(Q) wayland-scanner client-header $$< $$@
+	$$(Q) $$(WAYSCAN) client-header $$< $$@
 endef
 
 $(eval $(call generate_trash,xdg-shell,$(WL_PROTO_DIR)/stable/xdg-shell/))

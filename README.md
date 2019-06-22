@@ -76,31 +76,29 @@ Changes to the default key bindings are indicated in
 Compiling with full features requires development files for several
 external libraries. Below is a list of some important requirements.
 
-The mpv build system uses [waf](https://waf.io/), but we don't store it in the
-repository. The `./bootstrap.py` script will download the latest version
-of waf that was tested with the build system.
-
-For a list of the available build options use `./waf configure --help`. If
+For a list of the available build options use `./configure --help`. If
 you think you have support for some feature installed but configure fails to
 detect it, the file `build/config.log` may contain information about the
 reasons for the failure.
 
 NOTE: To avoid cluttering the output with unreadable spam, `--help` only shows
-one of the two switches for each option. If the option is autodetected by
+one of the many switches for each option. If the option is autodetected by
 default, the `--disable-***` switch is printed; if the option is disabled by
 default, the `--enable-***` switch is printed. Either way, you can use
-`--enable-***` or `--disable-**` regardless of what is printed by `--help`.
-
-To build the software you can use `./waf build`: the result of the compilation
-will be located in `build/mpv`. You can use `./waf install` to install mpv
-to the *prefix* after it is compiled.
+`--enable-***` or `--disable-***` regardless of what is printed by `--help`.
+By default, most features are auto-detected. You can use ``--with-***=option``
+to get finer control over whether auto-detection is used for a feature.
 
 Example:
 
-    ./bootstrap.py
-    ./waf configure
-    ./waf
-    ./waf install
+    ./configure && make -j20
+
+If everything goes well, the mpv binary is created in the ``build`` directory.
+
+`make` alone can be used to rebuild parts of the player. If you update, it's
+recommended to run `make dist-clean` and to rerun configure.
+
+See `./configure --help` for advanced usage.
 
 Essential dependencies (incomplete list):
 

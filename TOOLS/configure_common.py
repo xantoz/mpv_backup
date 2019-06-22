@@ -9,38 +9,48 @@ import tempfile
 NoneType = type(None)
 function = type(lambda: 0)
 
-# TODO: handle the following environment variables
-#CC
-#CFLAGS
-#CPPFLAGS (just append to CFLAGS)
-#LDFLAGS
-#TARGET and CROSS_COMPILE (both as prefix for CC)
-
-# options (waf):
-#--bindir=BINDIR     directory for installing binary files [${PREFIX}/bin]
-#--libdir=LIBDIR     directory for installing library files [${PREFIX}/lib]
-#--confdir=CONFDIR   directory for installing configuration files [${PREFIX}/etc/mpv]
-#--incdir=INCDIR     directory for installing include files [${PREFIX}/include]
-#--datadir=DATADIR   directory for installing data files [${PREFIX}/share]
-#--mandir=MANDIR     directory for installing man pages  [${DATADIR}/man]
-#--docdir=DOCDIR     directory for installing documentation files [${DATADIR}/doc/mpv]
-#--htmldir=HTMLDIR   directory for installing html documentation files [${DOCDIR}]
-#--zshdir=ZSHDIR     directory for installing zsh completion functions [${DATADIR}/zsh
-#                    /site-functions]
-#--confloaddir=CONFLOADDIR
-#                    directory for installing configuration files load directory
-#                    [${CONFDIR}]
-
 #also missing:
-#- general program finding (CC, wayland-scanner, ...?)
 #- actually support out of tree builds
 #- libmpv
 #- doc generation
-#- windows testing (needs exe suffix crap at least)
+#- windows console wrapper thing (?)
 #- osx testing
 #- swift stuff (impossible, craple wants you to stick a dagger up your ass)
 #- zsh generation
 #- building tests
+
+programs_info = [
+    # env. name     default
+    ("CC",          "cc"),
+    ("PKG_CONFIG",  "pkg-config"),
+    ("WINDRES",     "windres"),
+    ("WAYSCAN",     "wayland-scanner"),
+]
+
+install_paths_info = [
+    # env/opt       default
+    ("PREFIX",      "/usr/local"),
+    ("BINDIR",      "$(PREFIX)/bin"),
+    ("LIBDIR",      "$(PREFIX)/lib"),
+    ("CONFDIR",     "$(PREFIX)/etc/$(PROJNAME)"),
+    ("INCDIR",      "$(PREFIX)/include"),
+    ("DATADIR",     "$(PREFIX)/share"),
+    ("MANDIR",      "$(DATADIR)/man"),
+    ("DOCDIR",      "$(DATADIR)/doc/$(PROJNAME)"),
+    ("HTMLDIR",     "$(DOCDIR)"),
+    ("ZSHDIR",      "$(DATADIR)/zsh"),
+    ("CONFLOADDIR", "$(CONFDIR)"),
+]
+
+# for help output only; code grabs them manually
+other_env_vars = [
+    # env           # help text
+    ("CFLAGS",      "User C compiler flags to append."),
+    ("CPPFLAGS",    "Also treated as C compiler flags."),
+    ("LDFLAGS",     "C compiler flags for link command."),
+    ("TARGET",      "Prefix for default build tools (for cross compilation)"),
+    ("CROSS_COMPILE", "Same as TARGET."),
+]
 
 class _G:
     help_mode = False   # set if --help is specified on the command line
@@ -48,6 +58,16 @@ class _G:
     log_file = None     # opened log file
 
     temp_path = None    # set to a private, writable temporary directory
+    build_dir = None
+    root_dir = None
+    out_of_tree = False
+
+    install_paths = {}  # var name to path, see install_paths_info
+
+    programs = {}       # key is symbolic name, like CC, value is string of
+                        # executable name - only set if check_program was called
+
+    exe_format = "elf"
 
     cflags = []
     ldflags = []
@@ -75,11 +95,12 @@ def _c_quote_string(s):
     s = s.replace("\"", "\\\"")
     return "\"%s\"" % s
 
-# Convert a string to a make variable.
+# Convert a string to a make variable. Escaping is annoying: sometimes, you add
+# e..g arbitrary paths (=> everything escaped), but sometimes you want to keep
+# make variable use like $(...) unescaped.
 def _c_quote_makefile_var(s):
     s = s.replace("\\", "\\\\")
     s = s.replace("\"", "\\\"")
-    s = s.replace("$", "\\$")
     s = s.replace(" ", "\ ") # probably
     return s
 
@@ -92,6 +113,9 @@ def die(msg):
 
 # To be called before any user checks are performed.
 def begin():
+    for var, val in install_paths_info:
+        _G.install_paths[var] = val
+
     for arg in sys.argv[1:]:
         if arg.startswith("-"):
             name = arg[1:]
@@ -121,9 +145,30 @@ def begin():
                         % name)
                 _G.feature_opts[name[5:]] = val
                 continue
+            uname = name.upper()
+            if uname in _G.install_paths:
+                if not val:
+                    die("Option --%s requires a value." % name)
+                _G.install_paths[uname] = val
+                continue
         die("Unknown option: %s" % arg)
 
     if _G.help_mode:
+        print("Environment variables controlling choice of build tools:")
+        for name, default in programs_info:
+            print("  %-30s %s" % (name, default))
+
+        print("")
+        print("Environment variables/options controlling install paths:")
+        for name, default in install_paths_info:
+            print("  %-30s '%s' (also --%s)" % (name, default, name.lower()))
+
+        print("")
+        print("Other environment variables:")
+        for name, help in other_env_vars:
+            print("  %-30s %s" % (name, help))
+        print("In addition, pkg-config queries PKG_CONFIG_PATH.")
+        print("")
         return
 
     _G.temp_path = tempfile.mkdtemp(prefix = "mpv-configure")
@@ -131,7 +176,20 @@ def begin():
         shutil.rmtree(_G.temp_path)
     atexit.register(_cleanup)
 
+    _G.root_dir = "."
     _G.build_dir = "build"
+
+    # (os.path.samefile() is "UNIX only")
+    if os.path.realpath(sys.path[0]) != os.path.realpath(os.getcwd()):
+        print("This looks like an out of tree build.")
+        print("This doesn't actually work.")
+        # Keep the build dir; this makes it less likely to accidentally trash
+        # an existing dir, especially if dist-clean (wipes build dir) is used.
+        # Also, this will work even if the same-directory check above was wrong.
+        _G.build_dir = os.path.join(os.getcwd(), _G.build_dir)
+        _G.root_dir = sys.path[0]
+        _G.out_of_tree = True
+
     try:
         os.makedirs(_G.build_dir)
     except OSError:
@@ -145,21 +203,6 @@ def begin():
     _G.config_h += "// Generated by configure.\n" + \
                    "#pragma once\n\n"
 
-
-class Struct(object):
-    def __init__(self, **kwargs):
-        for name, value in kwargs.items():
-            setattr(self, name, value)
-
-    def __repr__(self):
-        class_members = dir(self.__class__)
-        members = dir(self)
-        items = []
-        for name in members:
-            if name in class_members:
-                continue
-            items.append("%s=%s" % (name, getattr(self, name)))
-        return "<Struct(%s)>" % (", ".join(items))
 
 # Check whether the first argument is the same type of any in the following
 # arguments. This _always_ returns val, but throws an exception if type checking
@@ -184,17 +227,36 @@ def normalize_list_arg(val):
 
 def push_build_flags():
     _G.state_stack.append(
-        (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak))
+        (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak,
+         _G.programs.copy()))
 
 def pop_build_flags_discard():
     top = _G.state_stack[-1]
     _G.state_stack = _G.state_stack[:-1]
 
-    (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak) = top
+    (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak,
+     _G.programs) = top
 
 def pop_build_flags_merge():
     top = _G.state_stack[-1]
     _G.state_stack = _G.state_stack[:-1]
+
+# Return build dir.
+def get_build_dir():
+    assert _G.build_dir is not None # too early?
+    return _G.build_dir
+
+# Root directory, i.e. top level source directory, or where configure/Makefile
+# are located.
+def get_root_dir():
+    assert _G.root_dir is not None # too early?
+    return _G.root_dir
+
+# Set which type of executable format the target uses.
+# Used for conventions which refuse to abstract properly.
+def set_exe_format(fmt):
+    assert fmt in ["elf", "pe", "macho"]
+    _G.exe_format = fmt
 
 # A check is a check, dependency, or anything else that adds source files,
 # preprocessor symbols, libraries, include paths, or simply serves as
@@ -238,6 +300,7 @@ def pop_build_flags_merge():
 #       if the check was disabled, and could add unneeded things to CFLAGS.
 #       If this function returns False, all added build flags are removed again,
 #       which makes it easy to compose checks.
+#       You're not supposed to call check() itself from fn.
 #   sources: String, Array of Strings, or None.
 #            If the check is enabled, add these sources to the build.
 #   required: String or None. If this is a string, the check is required, and
@@ -300,7 +363,7 @@ def check(name = None, option = None, desc = None, deps = None, deps_any = None,
     _G.log_file.write("--- Test: %s\n" % (name if name else "(unnnamed)"))
 
     if desc:
-        sys.stdout.write("Checking for %s..." % desc)
+        sys.stdout.write("Checking for %s... " % desc)
     outcome = "yes"
 
     force_opt = required is not None
@@ -371,7 +434,7 @@ def check(name = None, option = None, desc = None, deps = None, deps_any = None,
     if use_dep:
         _G.sources += sources
     if desc:
-        sys.stdout.write(" %s\n" % outcome)
+        sys.stdout.write("%s\n" % outcome)
     _G.log_file.write("--- Outcome: %s (%s=%d)\n" %
                       (outcome, name if name else "(unnnamed)", use_dep))
 
@@ -388,7 +451,9 @@ def check(name = None, option = None, desc = None, deps = None, deps_any = None,
 # In particular, this logs the command and its output/exit status to the log
 # file.
 def _run_process(args):
-    p = subprocess.Popen(args, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+    p = subprocess.Popen(args, stdout = subprocess.PIPE,
+                         stderr = subprocess.PIPE,
+                         stdin = -1)
     (p_out, p_err) = p.communicate()
     # We don't really want this. But Python 3 in particular makes it too much of
     # a PITA (think power drill in anus) to consistently use byte strings, so
@@ -462,7 +527,7 @@ def check_cc(include = None, decl = None, expr = None, defined = None,
     link = normalize_list_arg(link)
 
     outfile = os.path.join(_G.temp_path, "test")
-    args = ["cc", source]
+    args = [get_program("CC"), source]
     args += _G.cflags + flags
     if use_linking:
         args += _G.ldflags + link
@@ -482,7 +547,7 @@ def check_cc(include = None, decl = None, expr = None, defined = None,
 # If this succeeds, the --cflags and --libs are added to CFLAGS and LDFLAGS.
 def check_pkg_config(*args):
     args = list(args)
-    pkg_config_cmd = ["pkg-config"]
+    pkg_config_cmd = [get_program("PKG_CONFIG")]
 
     cflags = _run_process(pkg_config_cmd + ["--cflags"] + args)
     if cflags is None:
@@ -497,12 +562,51 @@ def check_pkg_config(*args):
 
 def get_pkg_config_variable(arg, varname):
     typecheck(arg, str)
-    pkg_config_cmd = ["pkg-config"]
+    pkg_config_cmd = [get_program("PKG_CONFIG")]
 
     res = _run_process(pkg_config_cmd + ["--variable=" + varname] + [arg])
     if res is not None:
         res = res.strip()
     return res
+
+# Check for a specific build tool. You pass in a symbolic name (e.g. "CC"),
+# which is then resolved to a full name and added as variable to config.mak.
+# The function returns a bool for success. You're not supposed to use the
+# program from configure; instead you're supposed to have rules in the makefile
+# using the generated variables.
+# (Some configure checks use the program directly anyway with get_program().)
+def check_program(env_name):
+    for name, default in programs_info:
+        if name == env_name:
+            val = os.environ.get(env_name, None)
+            if val is None:
+                prefix = os.environ.get("TARGET", None)
+                if prefix is None:
+                    prefix = os.environ.get("CROSS_COMPILE", "")
+                # Shitty hack: default to gcc if a prefix is given, as binutils
+                # toolchains generally provide only a -gcc wrapper.
+                if prefix and default == "cc":
+                    default = "gcc"
+                val = prefix + default
+            # Interleave with output. Sort of unkosher, but dare to stop me.
+            sys.stdout.write("(%s) " % val)
+            _G.log_file.write("--- Trying '%s' for '%s'...\n" % (val, env_name))
+            try:
+                _run_process([val])
+            except OSError as err:
+                _G.log_file.write("%s\n" % err)
+                return False
+            _G.programs[env_name] = val
+            add_config_mak_var(env_name, val)
+            return True
+    assert False, "Unknown program name '%s'" % env_name
+
+# Get the resolved value for a program. Explodes in your face if there wasn't
+# a successful and merged check_program() call before.
+def get_program(env_name):
+    val = _G.programs.get(env_name, None)
+    assert val is not None, "Called get_program(%s) without successful check." % env_name
+    return val
 
 # Return whether all passed dependency identifiers are fulfilled.
 def dep_enabled(*deps):
@@ -538,6 +642,13 @@ def add_config_mak_var(name, val):
 def add_sources(*sources):
     _G.sources += list(sources)
 
+# Get an environment variable and parse it as flags array.
+def _get_env_flags(name):
+    res = os.environ.get(name, "").split()
+    if len(res) == 1 and len(res[0]) == 0:
+        res = []
+    return res
+
 # To be called at the end of user checks.
 def finish():
     is_fatal = False
@@ -553,18 +664,30 @@ def finish():
 
     _G.config_h += "\n"
     add_config_h_define("CONFIGURATION", " ".join(sys.argv))
-    add_config_h_define("MPV_CONFDIR", "TODO")
+    add_config_h_define("MPV_CONFDIR", "$(CONFLOADDIR)")
     enabled_features = [x[0] for x in filter(lambda x: x[1], _G.dep_enabled.items())]
     add_config_h_define("FULLCONFIG", " ".join(sorted(enabled_features)))
 
     with open(os.path.join(_G.build_dir, "config.h"), "w") as f:
         f.write(_G.config_h)
 
-    config_mak = "# Generated by configure.\n\n"
-    config_mak += "CFLAGS = %s\n" % " ".join(_G.cflags)
-    config_mak += "\n"
-    config_mak += "LDFLAGS = %s\n" % " ".join(_G.ldflags)
-    config_mak += "\n"
+    add_config_mak_var("BUILD", _G.build_dir)
+    add_config_mak_var("ROOT", _G.root_dir)
+    _G.config_mak += "\n"
+
+    add_config_mak_var("EXESUF", ".exe" if _G.exe_format == "pe" else "")
+
+    for name, _ in install_paths_info:
+        add_config_mak_var(name, _G.install_paths[name])
+    _G.config_mak += "\n"
+
+    _G.config_mak += "CFLAGS = %s %s %s\n" % (" ".join(_G.cflags),
+                                              os.environ.get("CPPFLAGS", ""),
+                                              os.environ.get("CFLAGS", ""))
+    _G.config_mak += "\n"
+    _G.config_mak += "LDFLAGS = %s %s\n" % (" ".join(_G.ldflags),
+                                            os.environ.get("LDFLAGS", ""))
+    _G.config_mak += "\n"
 
     sources = []
     for s in _G.sources:
@@ -580,16 +703,20 @@ def finish():
             s = "$(ROOT)/%s" % s
         sources.append(s)
 
-    config_mak += "SOURCES = \\\n"
+    _G.config_mak += "SOURCES = \\\n"
     for s in sorted(list(set(sources))):
-        config_mak += "   %s \\\n" % s
+        _G.config_mak += "   %s \\\n" % s
 
-    config_mak += "\n"
-
-    config_mak += _G.config_mak
+    _G.config_mak += "\n"
 
     with open(os.path.join(_G.build_dir, "config.mak"), "w") as f:
-        f.write(config_mak)
+        f.write("# Generated by configure.\n\n" + _G.config_mak)
+
+    if _G.out_of_tree:
+        try:
+            os.symlink(os.path.join(_G.root_dir, "Makefile.new"), "Makefile")
+        except FileExistsError:
+            print("Not overwriting existing Makefile.")
 
     _G.log_file.write("--- Finishing successfully.\n")
     print("Done. You can run 'make' now.")
