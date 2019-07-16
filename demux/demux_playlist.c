@@ -47,7 +47,7 @@ static bool check_mimetype(struct stream *s, const char *const *list)
 struct pl_parser {
     struct mp_log *log;
     struct stream *s;
-    char buffer[8 * 1024];
+    char buffer[512 * 1024];
     int utf16;
     struct playlist *pl;
     bool error;
@@ -366,7 +366,7 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     p->add_base = true;
 
     bstr probe_buf = stream_peek(demuxer->stream, PROBE_SIZE);
-    p->s = open_memory_stream(probe_buf.start, probe_buf.len);
+    p->s = stream_memory_open(demuxer->global, probe_buf.start, probe_buf.len);
     p->s->mime_type = demuxer->stream->mime_type;
     p->utf16 = stream_skip_bom(p->s);
     p->force = force;
@@ -391,6 +391,8 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     demuxer->filetype = p->format ? p->format : fmt->name;
     demuxer->fully_read = true;
     talloc_free(p);
+    if (ok)
+        demux_close_stream(demuxer);
     return ok ? 0 : -1;
 }
 

@@ -174,7 +174,7 @@ static bool mp_image_alloc_planes(struct mp_image *mpi)
     assert(!mpi->planes[0]);
     assert(!mpi->bufs[0]);
 
-    int align = SWS_MIN_BYTE_ALIGN;
+    int align = MP_IMAGE_BYTE_ALIGN;
 
     int size = mp_image_get_alloc_size(mpi->imgfmt, mpi->w, mpi->h, align);
     if (size < 0)
@@ -263,6 +263,19 @@ struct mp_image *mp_image_alloc(int imgfmt, int w, int h)
         return NULL;
     }
     return mpi;
+}
+
+int mp_image_approx_byte_size(struct mp_image *img)
+{
+    int total = sizeof(*img);
+
+    for (int n = 0; n < MP_MAX_PLANES; n++) {
+        struct AVBufferRef *buf = img->bufs[n];
+        if (buf)
+            total += buf->size;
+    }
+
+    return total;
 }
 
 struct mp_image *mp_image_new_copy(struct mp_image *img)

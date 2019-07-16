@@ -29,6 +29,8 @@ typedef struct mp_vo_opts {
     float zoom;
     float pan_x, pan_y;
     float align_x, align_y;
+    float margin_x[2];
+    float margin_y[2];
     int unscaled;
 
     struct m_geometry geometry;
@@ -194,7 +196,6 @@ typedef struct MPOpts {
     char *force_configdir;
     int use_filedir_conf;
     int hls_bitrate;
-    int chapterrange[2];
     int edition_id;
     int correct_pts;
     int initial_audio_sync;
@@ -224,6 +225,7 @@ typedef struct MPOpts {
     struct m_rel_time play_start;
     struct m_rel_time play_end;
     struct m_rel_time play_length;
+    int play_dir;
     int rebase_start_time;
     int play_frames;
     double ab_loop[2];
@@ -248,9 +250,12 @@ typedef struct MPOpts {
     char *demuxer_name;
     int demuxer_thread;
     double demux_termination_timeout;
+    int demuxer_cache_wait;
     int prefetch_open;
     char *audio_demuxer_name;
     char *sub_demuxer_name;
+    int64_t video_reverse_size;
+    int64_t audio_reverse_size;
 
     int cache_pause;
     int cache_pause_initial;
@@ -284,14 +289,7 @@ typedef struct MPOpts {
 
     int w32_priority;
 
-    struct tv_params *tv_params;
-    struct pvr_params *stream_pvr_opts;
-    struct cdda_params *stream_cdda_opts;
-    struct dvb_params *stream_dvb_opts;
     struct stream_lavf_params *stream_lavf_opts;
-
-    char *cdrom_device;
-    char *bluray_device;
 
     double mf_fps;
     char *mf_type;
@@ -302,6 +300,7 @@ typedef struct MPOpts {
     struct demux_mkv_opts *demux_mkv;
 
     struct demux_opts *demux_opts;
+    struct demux_cache_opts *demux_cache_opts;
 
     struct vd_lavc_params *vd_lavc_params;
     struct ad_lavc_params *ad_lavc_params;

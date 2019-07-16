@@ -100,6 +100,18 @@ entries affect all other file entries in the EDL file. Their format is highly
 implementation specific. They should generally follow the file header, and come
 before any file entries.
 
+Disabling chapter generation and copying
+========================================
+
+By default, chapters from the source ranges are copied to the virtual file's
+chapters. Also, a chapter is inserted after each range. This can be disabled
+with the ``no_chapters`` header.
+
+Example::
+
+    !no_chapters
+
+
 MP4 DASH
 ========
 
@@ -130,6 +142,45 @@ The current implementation will
 - open and close segments (i.e. fragments) as needed
 - not add segment boundaries as chapter points
 - require full compatibility between all segments (same codec etc.)
+
+Another header part of this mechanism is ``no_clip``. This header is similar
+to ``mp4_dash``, but does not include on-demand opening/closing of segments,
+and does not support init segments. It also exists solely to support internal
+ytdl requirements.
+
+The ``mp4_dash`` and ``no_clip`` headers are not part of the core EDL format.
+They may be changed or removed at any time, depending on mpv's internal
+requirements.
+
+Separate files for tracks
+=========================
+
+The special ``new_stream`` header lets you specify separate parts and time
+offsets for separate tracks. This can for example be used to source audio and
+video track from separate files.
+
+Example::
+
+    # mpv EDL v0
+    video.mkv
+    !new_stream
+    audio.mkv
+
+This adds all tracks from both files to the virtual track list. Upon playback,
+the tracks will be played at the same time, instead of appending them. The files
+can contain more than 1 stream; the apparent effect is the same as if the second
+part after the ``!new_stream`` part were in a separate ``.edl`` file and added
+with ``--external-file``.
+
+Note that all metadata between the stream sets created by ``new_stream`` is
+disjoint. Global metadata is taken from the first part only.
+
+In context of mpv, this is redundant to the ``--audio-file`` and
+``--external-file`` options, but (as of this writing) has the advantage that
+this will use a unified cache for all streams.
+
+The ``new_stream`` header is not part of the core EDL format. It may be changed
+or removed at any time, depending on mpv's internal requirements.
 
 Timestamp format
 ================
@@ -173,3 +224,6 @@ header, the syntax is exactly the same. It's far more convenient to use ``;``
 instead of line breaks, but that is orthogonal.
 
 Example: ``edl://f1.mkv,length=5,start=10;f2.mkv,30,20;f3.mkv``
+
+As a quirks, mpv will accept arbitrary paths in EDLs originating from
+``edl://``, while ``.edl`` does not. This makes no sense.

@@ -29,6 +29,7 @@
 #include "config.h"
 
 #include "video/out/gpu/hwdec.h"
+#include "video/fmt-conversion.h"
 #include "video/mp_image_pool.h"
 #include "video/vaapi.h"
 
@@ -615,7 +616,7 @@ err:
     return -1;
 }
 
-static bool try_format(struct ra_hwdec *hw, struct mp_image *surface)
+static bool try_format_map(struct ra_hwdec *hw, struct mp_image *surface)
 {
     bool ok = false;
     struct ra_hwdec_mapper *mapper = ra_hwdec_mapper_create(hw, &surface->params);
@@ -625,59 +626,124 @@ static bool try_format(struct ra_hwdec *hw, struct mp_image *surface)
     return ok;
 }
 
+static void try_format_pixfmt(struct ra_hwdec *hw, enum AVPixelFormat pixfmt)
+{
+    struct priv_owner *p = hw->priv;
+
+    int mp_fmt = pixfmt2imgfmt(pixfmt);
+    if (!mp_fmt)
+        return;
+
+    int num_formats = 0;
+    for (int n = 0; p->formats && p->formats[n]; n++) {
+        if (p->formats[n] == mp_fmt)
+            return; // already added
+        num_formats += 1;
+    }
+
+    AVBufferRef *fref = NULL;
+    struct mp_image *s = NULL;
+    AVFrame *frame = NULL;
+    fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
+    if (!fref)
+        goto err;
+    AVHWFramesContext *fctx = (void *)fref->data;
+    fctx->format = AV_PIX_FMT_VAAPI;
+    fctx->sw_format = pixfmt;
+    fctx->width = 128;
+    fctx->height = 128;
+    if (av_hwframe_ctx_init(fref) < 0)
+        goto err;
+    frame = av_frame_alloc();
+    if (!frame)
+        goto err;
+    if (av_hwframe_get_buffer(fref, frame, 0) < 0)
+        goto err;
+    s = mp_image_from_av_frame(frame);
+    if (!s || !mp_image_params_valid(&s->params))
+        goto err;
+    if (try_format_map(hw, s)) {
+        MP_TARRAY_APPEND(p, p->formats, num_formats, mp_fmt);
+        MP_TARRAY_APPEND(p, p->formats, num_formats, 0); // terminate it
+    }
+err:
+    talloc_free(s);
+    av_frame_free(&frame);
+    av_buffer_unref(&fref);
+}
+
+static void try_format_config(struct ra_hwdec *hw, AVVAAPIHWConfig *hwconfig)
+{
+    struct priv_owner *p = hw->priv;
+    AVHWFramesConstraints *fc =
+            av_hwdevice_get_hwframe_constraints(p->ctx->av_device_ref, hwconfig);
+    if (!fc) {
+        MP_WARN(hw, "failed to retrieve libavutil frame constraints\n");
+        return;
+    }
+    for (int n = 0; fc->valid_sw_formats &&
+                    fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++)
+        try_format_pixfmt(hw, fc->valid_sw_formats[n]);
+    av_hwframe_constraints_free(&fc);
+}
+
 static void determine_working_formats(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
-    int num_formats = 0;
-    int *formats = NULL;
+    VAStatus status;
+    VAProfile *profiles = NULL;
+    VAEntrypoint *entrypoints = NULL;
 
     p->probing_formats = true;
 
-    AVHWFramesConstraints *fc =
-            av_hwdevice_get_hwframe_constraints(p->ctx->av_device_ref, NULL);
-    if (!fc) {
-        MP_WARN(hw, "failed to retrieve libavutil frame constraints\n");
+    AVVAAPIHWConfig *hwconfig = av_hwdevice_hwconfig_alloc(p->ctx->av_device_ref);
+    if (!hwconfig) {
+        MP_WARN(hw, "Could not allocate FFmpeg AVVAAPIHWConfig\n");
         goto done;
     }
-    for (int n = 0; fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++) {
-        AVBufferRef *fref = NULL;
-        struct mp_image *s = NULL;
-        AVFrame *frame = NULL;
-        fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
-        if (!fref)
-            goto err;
-        AVHWFramesContext *fctx = (void *)fref->data;
-        fctx->format = AV_PIX_FMT_VAAPI;
-        fctx->sw_format = fc->valid_sw_formats[n];
-        fctx->width = 128;
-        fctx->height = 128;
-        if (av_hwframe_ctx_init(fref) < 0)
-            goto err;
-        frame = av_frame_alloc();
-        if (!frame)
-            goto err;
-        if (av_hwframe_get_buffer(fref, frame, 0) < 0)
-            goto err;
-        s = mp_image_from_av_frame(frame);
-        if (!s || !mp_image_params_valid(&s->params))
-            goto err;
-        if (try_format(hw, s))
-            MP_TARRAY_APPEND(p, formats, num_formats, s->params.hw_subfmt);
-    err:
-        talloc_free(s);
-        av_frame_free(&frame);
-        av_buffer_unref(&fref);
+
+    profiles = talloc_zero_array(NULL, VAProfile, vaMaxNumProfiles(p->display));
+    entrypoints = talloc_zero_array(NULL, VAEntrypoint,
+                                    vaMaxNumEntrypoints(p->display));
+    int num_profiles = 0;
+    status = vaQueryConfigProfiles(p->display, profiles, &num_profiles);
+    if (!CHECK_VA_STATUS(hw, "vaQueryConfigProfiles()"))
+        num_profiles = 0;
+
+    for (int n = 0; n < num_profiles; n++) {
+        VAProfile profile = profiles[n];
+        int num_ep = 0;
+        status = vaQueryConfigEntrypoints(p->display, profile, entrypoints,
+                                          &num_ep);
+        if (!CHECK_VA_STATUS(hw, "vaQueryConfigEntrypoints()"))
+            continue;
+        for (int ep = 0; ep < num_ep; ep++) {
+            VAConfigID config = VA_INVALID_ID;
+            status = vaCreateConfig(p->display, profile, entrypoints[ep],
+                                    NULL, 0, &config);
+            if (status != VA_STATUS_SUCCESS) {
+                MP_VERBOSE(hw, "vaCreateConfig(): '%s' for profile %d",
+                        vaErrorStr(status), (int)profile);
+                continue;
+            }
+
+            hwconfig->config_id = config;
+            try_format_config(hw, hwconfig);
+
+            vaDestroyConfig(p->display, config);
+        }
     }
-    av_hwframe_constraints_free(&fc);
 
 done:
-    MP_TARRAY_APPEND(p, formats, num_formats, 0); // terminate it
-    p->formats = formats;
+    av_free(hwconfig);
+    talloc_free(profiles);
+    talloc_free(entrypoints);
+
     p->probing_formats = false;
 
     MP_VERBOSE(hw, "Supported formats:\n");
-    for (int n = 0; formats[n]; n++)
-        MP_VERBOSE(hw, " %s\n", mp_imgfmt_to_name(formats[n]));
+    for (int n = 0; p->formats && p->formats[n]; n++)
+        MP_VERBOSE(hw, " %s\n", mp_imgfmt_to_name(p->formats[n]));
 }
 
 const struct ra_hwdec_driver ra_hwdec_vaegl = {

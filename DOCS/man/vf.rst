@@ -442,31 +442,6 @@ Available mpv-only filters are:
     ``display_fps``
         Refresh rate of the current display. Note that this value can be 0.
 
-``vapoursynth-lazy``
-    The same as ``vapoursynth``, but doesn't load Python scripts. Instead, a
-    custom backend using Lua and the raw VapourSynth API is used. The syntax
-    is completely different, and absolutely no convenience features are
-    provided. There's no type checking either, and you can trigger crashes.
-
-    .. admonition:: Example:
-
-        ::
-
-            video_out = invoke("morpho", "Open", {clip = video_in})
-
-    The special variable ``video_in`` is the mpv video source, while the
-    special variable ``video_out`` is used to read video from. The 1st argument
-    is the plugin (queried with ``getPluginByNs``), the 2nd is the filter name,
-    and the 3rd argument is a table with the arguments. Positional arguments
-    are not supported. The types must match exactly. Since Lua is terrible and
-    can't distinguish integers and floats, integer arguments must be prefixed
-    with ``i_``, in which case the prefix is removed and the argument is cast
-    to an integer. Should the argument's name start with ``i_``, you're out of
-    luck.
-
-    Clips (VSNodeRef) are passed as light userdata, so trying to pass any
-    other userdata type will result in hard crashes.
-
 ``vavpp``
     VA-API video post processing. Requires the system to support VA-API,
     i.e. Linux/BSD only. Works with ``--vo=vaapi`` and ``--vo=gpu`` only.
@@ -570,3 +545,74 @@ Available mpv-only filters are:
         which algorithm is actually selected. ``none`` always falls back. On
         most if not all hardware, this option will probably do nothing, because
         a video processor usually supports all modes or none.
+
+``fingerprint=...``
+    Compute video frame fingerprints and provide them as metadata. Actually, it
+    currently barely deserved to be called ``fingerprint``, because it does not
+    compute "proper" fingerprints, only tiny downscaled images (but which can be
+    used to compute image hashes or for similarity matching).
+
+    The main purpose of this filter is to support the ``skip-logo.lua`` script.
+    If this script is dropped, or mpv ever gains a way to load user-defined
+    filters (other than VapourSynth), this filter will be removed. Due to the
+    "special" nature of this filter, it will be removed without warning.
+
+    The intended way to read from the filter is using ``vf-metadata`` (also
+    see ``clear-on-query`` filter parameter). The property will return a list
+    of key/value pairs as follows:
+
+    ::
+
+        fp0.pts = 1.2345
+        fp0.hex = 1234abcdef...bcde
+        fp1.pts = 1.4567
+        fp1.hex = abcdef1234...6789
+        ...
+        fpN.pts = ...
+        fpN.hex = ...
+        type = gray-hex-16x16
+
+    Each ``fp<N>`` entry is for a frame. The ``pts`` entry specifies the
+    timestamp of the frame (within the filter chain; in simple cases this is
+    the same as the display timestamp). The ``hex`` field is the hex encoded
+    fingerprint, whose size and meaning depend on the ``type`` filter option.
+    The ``type`` field has the same value as the option the filter was created
+    with.
+
+    This returns the frames that were filtered since the last query of the
+    property. If ``clear-on-query=no`` was set, a query doesn't reset the list
+    of frames. In both cases, a maximum of 10 frames is returned. If there are
+    more frames, the oldest frames are discarded. Frames are returned in filter
+    order.
+
+    (This doesn't return a structured list for the per-frame details because the
+    internals of the ``vf-metadata`` mechanism suck. The returned format may
+    change in the future.)
+
+    This filter uses zimg for speed and profit. However, it will fallback to
+    libswscale in a number of situations: lesser pixel formats, unaligned data
+    pointers or strides, or if zimg fails to initialize for unknown reasons. In
+    these cases, the filter will use more CPU. Also, it will output different
+    fingerprints, because libswscale cannot perform the full range expansion we
+    normally request from zimg. As a consequence, the filter may be slower and
+    not work correctly in random situations.
+
+    ``type=...``
+        What fingerprint to compute. Available types are:
+
+        :gray-hex-8x8:      grayscale, 8 bit, 8x8 size
+        :gray-hex-16x16:    grayscale, 8 bit, 16x16 size (default)
+
+        Both types simply remove all colors, downscale the image, concatenate
+        all pixel values to a byte array, and convert the array to a hex string.
+
+    ``clear-on-query=yes|no``
+        Clear the list of frame fingerprints if the ``vf-metadata`` property for
+        this filter is queried (default: yes). This requires some care by the
+        user. Some types of accesses might query the filter multiple times,
+        which leads to lost frames.
+
+    ``print=yes|no``
+        Print computed fingerprints the the terminal (default: no). This is
+        mostly for testing and such. Scripts should use ``vf-metadata`` to
+        read information from this filter instead.

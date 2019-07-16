@@ -92,7 +92,7 @@ char *mp_imgfmt_to_name_buf(char *buf, size_t buf_size, int fmt)
         name = "unknown";
     snprintf(buf, buf_size, "%s", name);
     int len = strlen(buf);
-    if (len > 2 && buf[len - 2] == MP_SELECT_LE_BE('l', 'b') && buf[len - 1] == 'e')
+    if (len > 2 && buf[len - 2] == 'l' && buf[len - 1] == 'e')
         buf[len - 2] = '\0';
     return buf;
 }
@@ -539,7 +539,7 @@ int main(int argc, char **argv)
             fr->format = fmt;
             fr->width = 128;
             fr->height = 128;
-            int err = av_frame_get_buffer(fr, SWS_MIN_BYTE_ALIGN);
+            int err = av_frame_get_buffer(fr, MP_IMAGE_BYTE_ALIGN);
             assert(err >= 0);
             struct mp_image *mpi = mp_image_alloc(mpfmt, fr->width, fr->height);
             assert(mpi);

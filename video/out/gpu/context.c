@@ -35,7 +35,6 @@
 
 /* OpenGL */
 extern const struct ra_ctx_fns ra_ctx_glx;
-extern const struct ra_ctx_fns ra_ctx_glx_probe;
 extern const struct ra_ctx_fns ra_ctx_x11_egl;
 extern const struct ra_ctx_fns ra_ctx_drm_egl;
 extern const struct ra_ctx_fns ra_ctx_cocoa;
@@ -45,8 +44,6 @@ extern const struct ra_ctx_fns ra_ctx_angle;
 extern const struct ra_ctx_fns ra_ctx_dxgl;
 extern const struct ra_ctx_fns ra_ctx_rpi;
 extern const struct ra_ctx_fns ra_ctx_android;
-extern const struct ra_ctx_fns ra_ctx_mali_fbdev;
-extern const struct ra_ctx_fns ra_ctx_vdpauglx;
 
 /* Vulkan */
 extern const struct ra_ctx_fns ra_ctx_vulkan_wayland;
@@ -83,9 +80,6 @@ static const struct ra_ctx_fns *contexts[] = {
 #if HAVE_GL_WAYLAND
     &ra_ctx_wayland_egl,
 #endif
-#if HAVE_GL_X11
-    &ra_ctx_glx_probe,
-#endif
 #if HAVE_EGL_X11
     &ra_ctx_x11_egl,
 #endif
@@ -94,12 +88,6 @@ static const struct ra_ctx_fns *contexts[] = {
 #endif
 #if HAVE_EGL_DRM
     &ra_ctx_drm_egl,
-#endif
-#if HAVE_MALI_FBDEV
-    &ra_ctx_mali_fbdev,
-#endif
-#if HAVE_VDPAU_GL_X11
-    &ra_ctx_vdpauglx,
 #endif
 
 // Vulkan contexts:

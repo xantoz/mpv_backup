@@ -150,9 +150,7 @@ main_dependencies = [
     }, {
         'name': 'posix',
         'desc': 'POSIX environment',
-        # This should be good enough.
-        'func': check_statement(['poll.h', 'unistd.h', 'sys/mman.h'],
-            'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f); munmap(f,0)'),
+        'func': check_statement(['unistd.h'], 'long x = _POSIX_VERSION'),
     }, {
         'name': '--android',
         'desc': 'Android environment',
@@ -353,35 +351,6 @@ iconv support use --disable-iconv.",
         'req': True,
         'fmsg': 'Unable to find development files for zlib.'
     }, {
-        'name': '--libbluray',
-        'desc': 'Bluray support',
-        'func': check_pkg_config('libbluray', '>= 0.3.0'),
-        #'default': 'disable',
-    }, {
-        'name': '--dvdread',
-        'desc': 'dvdread support',
-        'deps': 'gpl',
-        'func': check_pkg_config('dvdread', '>= 4.1.0'),
-        'default': 'disable',
-    }, {
-        'name': '--dvdnav',
-        'desc': 'dvdnav support',
-        'deps': 'gpl',
-        'func': check_pkg_config('dvdnav',  '>= 4.2.0',
-                                 'dvdread', '>= 4.1.0'),
-        'default': 'disable',
-    }, {
-        'name': 'dvdread-common',
-        'desc': 'DVD/IFO support',
-        'deps': 'gpl && (dvdread || dvdnav)',
-        'func': check_true,
-    }, {
-        'name': '--cdda',
-        'desc': 'cdda support (libcdio)',
-        'deps': 'gpl',
-        'func': check_pkg_config('libcdio_paranoia'),
-        'default': 'disable',
-    }, {
         'name': '--uchardet',
         'desc': 'uchardet support',
         'deps': 'iconv',
@@ -392,24 +361,18 @@ iconv support use --disable-iconv.",
         'deps': 'libaf',
         'func': check_pkg_config('rubberband', '>= 1.8.0'),
     }, {
+        'name': '--zimg',
+        'desc': 'libzimg support (for vf_fingerprint)',
+        'func': check_pkg_config('zimg', '>= 2.9'),
+    }, {
         'name': '--lcms2',
         'desc': 'LCMS2 support',
         'func': check_pkg_config('lcms2', '>= 2.6'),
     }, {
         'name': '--vapoursynth',
-        'desc': 'VapourSynth filter bridge (Python)',
+        'desc': 'VapourSynth filter bridge',
         'func': check_pkg_config('vapoursynth',        '>= 24',
                                  'vapoursynth-script', '>= 23'),
-    }, {
-        'name': '--vapoursynth-lazy',
-        'desc': 'VapourSynth filter bridge (Lazy Lua)',
-        'deps': 'lua',
-        'func': check_pkg_config('vapoursynth',        '>= 24'),
-    }, {
-        'name': 'vapoursynth-core',
-        'desc': 'VapourSynth filter bridge (core)',
-        'deps': 'vapoursynth || vapoursynth-lazy',
-        'func': check_true,
     }, {
         'name': '--libarchive',
         'desc': 'libarchive wrapper for reading zip files and more',
@@ -798,19 +761,10 @@ video_output_features = [
         'deps': 'libmpv-shared || libmpv-static',
         'func': check_true,
     }, {
-        'name': '--mali-fbdev',
-        'desc': 'MALI via Linux fbdev',
-        'deps': 'libdl',
-        'func': compose_checks(
-            check_cc(lib="EGL"),
-            check_statement('EGL/fbdev_window.h', 'struct fbdev_window test'),
-            check_statement('linux/fb.h', 'struct fb_var_screeninfo test'),
-        ),
-    }, {
         'name': '--gl',
         'desc': 'OpenGL context support',
         'deps': 'gl-cocoa || gl-x11 || egl-x11 || egl-drm || '
-                 + 'gl-win32 || gl-wayland || rpi || mali-fbdev || '
+                 + 'gl-win32 || gl-wayland || rpi || '
                  + 'plain-gl',
         'func': check_true,
         'req': True,
@@ -834,7 +788,7 @@ video_output_features = [
     }, {
         'name': 'egl-helpers',
         'desc': 'EGL helper functions',
-        'deps': 'egl-x11 || mali-fbdev || rpi || gl-wayland || egl-drm || ' +
+        'deps': 'egl-x11 || rpi || gl-wayland || egl-drm || ' +
                 'egl-angle-win32 || egl-android',
         'func': check_true
     }
@@ -876,47 +830,6 @@ hwaccel_features = [
         'desc': 'CUDA hwaccel',
         'deps': '(gl || vulkan) && ffnvcodec',
         'func': check_true,
-    }
-]
-
-radio_and_tv_features = [
-    {
-        'name': '--tv',
-        'desc': 'TV interface',
-        'deps': 'gpl',
-        'func': check_true,
-        'default': 'disable',
-    }, {
-        'name': 'sys_videoio_h',
-        'desc': 'videoio.h',
-        'func': check_cc(header_name=['sys/time.h', 'sys/videoio.h']),
-        'deps': 'tv',
-    }, {
-        'name': 'videodev',
-        'desc': 'videodev2.h',
-        'func': check_cc(header_name=['sys/time.h', 'linux/videodev2.h']),
-        'deps': 'tv && !sys_videoio_h',
-    }, {
-        'name': '--tv-v4l2',
-        'desc': 'Video4Linux2 TV interface',
-        'deps': 'tv && (sys_videoio_h || videodev)',
-        'func': check_true,
-    }, {
-        'name': '--libv4l2',
-        'desc': 'libv4l2 support',
-        'func': check_pkg_config('libv4l2'),
-        'deps': 'tv-v4l2',
-    }, {
-        'name': '--audio-input',
-        'desc': 'audio input support',
-        'deps': 'tv-v4l2',
-        'func': check_true
-    } , {
-        'name': '--dvbin',
-        'desc': 'DVB input module',
-        'deps': 'gpl',
-        'func': check_true,
-        'default': 'disable',
     }
 ]
 
@@ -998,7 +911,6 @@ def options(opt):
     opt.parse_features('audio outputs',     audio_output_features)
     opt.parse_features('video outputs',     video_output_features)
     opt.parse_features('hwaccels',          hwaccel_features)
-    opt.parse_features('tv features',       radio_and_tv_features)
     opt.parse_features('standalone app',    standalone_features)
 
     group = opt.get_option_group("optional features")
@@ -1071,7 +983,6 @@ def configure(ctx):
     ctx.parse_dependencies(video_output_features)
     ctx.parse_dependencies(libav_dependencies)
     ctx.parse_dependencies(hwaccel_features)
-    ctx.parse_dependencies(radio_and_tv_features)
 
     if ctx.options.LUA_VER:
         ctx.options.enable_lua = True

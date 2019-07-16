@@ -70,6 +70,8 @@ void run_command(struct MPContext *mpctx, struct mp_cmd *cmd,
                  void (*on_completion)(struct mp_cmd_ctx *cmd),
                  void *on_completion_priv);
 void mp_cmd_ctx_complete(struct mp_cmd_ctx *cmd);
+PRINTF_ATTRIBUTE(3, 4)
+void mp_cmd_msg(struct mp_cmd_ctx *cmd, int status, const char *msg, ...);
 char *mp_property_expand_string(struct MPContext *mpctx, const char *str);
 char *mp_property_expand_escaped_string(struct MPContext *mpctx, const char *str);
 void property_print_help(struct MPContext *mpctx);
@@ -107,5 +109,7 @@ void mp_hook_add(struct MPContext *mpctx, const char *client, const char *name,
                  uint64_t user_id, int pri, bool legacy);
 
 void mark_seek(struct MPContext *mpctx);
+
+void mp_abort_cache_dumping(struct MPContext *mpctx);
 
 #endif /* MPLAYER_COMMAND_H */

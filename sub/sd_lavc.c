@@ -147,10 +147,10 @@ static void convert_pal(uint32_t *colors, size_t count, bool gray)
 {
     for (int n = 0; n < count; n++) {
         uint32_t c = colors[n];
-        int b = c & 0xFF;
-        int g = (c >> 8) & 0xFF;
-        int r = (c >> 16) & 0xFF;
-        int a = (c >> 24) & 0xFF;
+        uint32_t b = c & 0xFF;
+        uint32_t g = (c >> 8) & 0xFF;
+        uint32_t r = (c >> 16) & 0xFF;
+        uint32_t a = (c >> 24) & 0xFF;
         if (gray)
             r = g = b = (r + g + b) / 3;
         // from straight to pre-multiplied alpha
@@ -447,6 +447,23 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
         w = priv->video_params.w;
         h = priv->video_params.h;
     }
+
+    if (opts->sub_pos != 100 && opts->ass_style_override) {
+        int offset = (100 - opts->sub_pos) / 100.0 * h;
+
+        for (int n = 0; n < res->num_parts; n++) {
+            struct sub_bitmap *sub = &res->parts[n];
+
+            // Decide by heuristic whether this is a sub-title or something
+            // else (top-title, covering whole screen).
+            if (sub->y < h / 2)
+                continue;
+
+            // Allow moving up the subtitle, but only until it clips.
+            sub->y = MPMAX(sub->y - offset, 0);
+        }
+    }
+
     osd_rescale_bitmaps(res, w, h, d, video_par);
 }
 

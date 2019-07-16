@@ -55,9 +55,6 @@ static void print_version(struct mp_log *log)
     mp_print_version(log, true);
 }
 
-extern const struct m_sub_options tv_params_conf;
-extern const struct m_sub_options stream_cdda_conf;
-extern const struct m_sub_options stream_dvb_conf;
 extern const struct m_sub_options stream_lavf_conf;
 extern const struct m_sub_options sws_conf;
 extern const struct m_sub_options drm_conf;
@@ -73,6 +70,7 @@ extern const struct m_sub_options gl_video_conf;
 extern const struct m_sub_options ao_alsa_conf;
 
 extern const struct m_sub_options demux_conf;
+extern const struct m_sub_options demux_cache_conf;
 
 extern const struct m_obj_list vf_obj_list;
 extern const struct m_obj_list af_obj_list;
@@ -129,6 +127,10 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_FLOATRANGE("video-pan-y", pan_y, 0, -3.0, 3.0),
     OPT_FLOATRANGE("video-align-x", align_x, 0, -1.0, 1.0),
     OPT_FLOATRANGE("video-align-y", align_y, 0, -1.0, 1.0),
+    OPT_FLOATRANGE("video-margin-ratio-left", margin_x[0], 0, 0.0, 1.0),
+    OPT_FLOATRANGE("video-margin-ratio-right", margin_x[1], 0, 0.0, 1.0),
+    OPT_FLOATRANGE("video-margin-ratio-top", margin_y[0], 0, 0.0, 1.0),
+    OPT_FLOATRANGE("video-margin-ratio-bottom", margin_y[1], 0, 0.0, 1.0),
     OPT_CHOICE("video-unscaled", unscaled, 0,
                ({"no", 0}, {"yes", 1}, {"downscale-big", 2})),
     OPT_INT64("wid", WinID, 0),
@@ -279,22 +281,6 @@ const struct m_sub_options mp_osd_render_sub_opts = {
 };
 
 #undef OPT_BASE_STRUCT
-#define OPT_BASE_STRUCT struct dvd_opts
-
-const struct m_sub_options dvd_conf = {
-    .opts = (const struct m_option[]){
-        OPT_STRING("dvd-device", device, M_OPT_FILE),
-        OPT_INT("dvd-speed", speed, 0),
-        OPT_INTRANGE("dvd-angle", angle, 0, 1, 99),
-        {0}
-    },
-    .size = sizeof(struct dvd_opts),
-    .defaults = &(const struct dvd_opts){
-        .angle = 1,
-    },
-};
-
-#undef OPT_BASE_STRUCT
 #define OPT_BASE_STRUCT struct filter_opts
 
 const struct m_sub_options filter_conf = {
@@ -384,18 +370,8 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("load-stats-overlay", lua_load_stats, UPDATE_BUILTIN_SCRIPTS),
 #endif
 
-// ------------------------- stream options --------------------
-
-#if HAVE_DVDREAD || HAVE_DVDNAV
-    OPT_SUBSTRUCT("", dvd_opts, dvd_conf, 0),
-#endif /* HAVE_DVDREAD */
-    OPT_INTPAIR("chapter", chapterrange, 0, .deprecation_message = "instead of "
-        "--chapter=A-B use --start=#A --end=#B+1"),
     OPT_CHOICE_OR_INT("edition", edition_id, 0, 0, 8190,
                       ({"auto", -1})),
-#if HAVE_LIBBLURAY
-    OPT_STRING("bluray-device", bluray_device, M_OPT_FILE),
-#endif /* HAVE_LIBBLURAY */
 
 // ------------------------- demuxer options --------------------
 
@@ -404,6 +380,11 @@ const m_option_t mp_opts[] = {
     OPT_REL_TIME("start", play_start, 0),
     OPT_REL_TIME("end", play_end, 0),
     OPT_REL_TIME("length", play_length, 0),
+
+    OPT_CHOICE("play-dir", play_dir, 0,
+               ({"forward", 1}, {"+", 1}, {"backward", -1}, {"-", -1})),
+    OPT_BYTE_SIZE("video-reversal-buffer", video_reverse_size, 0, 0, (size_t)-1),
+    OPT_BYTE_SIZE("audio-reversal-buffer", audio_reverse_size, 0, 0, (size_t)-1),
 
     OPT_FLAG("rebase-start-time", rebase_start_time, 0),
 
@@ -447,11 +428,6 @@ const m_option_t mp_opts[] = {
 
     OPT_STRINGLIST("display-tags", display_tags, 0),
 
-#if HAVE_CDDA
-    OPT_SUBSTRUCT("cdda", stream_cdda_opts, stream_cdda_conf, 0),
-    OPT_STRING("cdrom-device", cdrom_device, M_OPT_FILE),
-#endif
-
     // demuxer.c - select audio/sub file/demuxer
     OPT_PATHLIST("audio-files", audio_files, 0),
     OPT_CLI_ALIAS("audio-file", "audio-files-append"),
@@ -460,6 +436,7 @@ const m_option_t mp_opts[] = {
     OPT_STRING("sub-demuxer", sub_demuxer_name, 0),
     OPT_FLAG("demuxer-thread", demuxer_thread, 0),
     OPT_DOUBLE("demuxer-termination-timeout", demux_termination_timeout, 0),
+    OPT_FLAG("demuxer-cache-wait", demuxer_cache_wait, 0),
     OPT_FLAG("prefetch-playlist", prefetch_open, 0),
     OPT_FLAG("cache-pause", cache_pause, 0),
     OPT_FLAG("cache-pause-initial", cache_pause_initial, 0),
@@ -467,12 +444,6 @@ const m_option_t mp_opts[] = {
 
     OPT_DOUBLE("mf-fps", mf_fps, 0),
     OPT_STRING("mf-type", mf_type, 0),
-#if HAVE_TV
-    OPT_SUBSTRUCT("tv", tv_params, tv_params_conf, 0),
-#endif /* HAVE_TV */
-#if HAVE_DVBIN
-    OPT_SUBSTRUCT("dvbin", stream_dvb_opts, stream_dvb_conf, 0),
-#endif
     OPT_SUBSTRUCT("", stream_lavf_opts, stream_lavf_conf, 0),
 
 // ------------------------- a-v sync options --------------------
@@ -691,7 +662,8 @@ const m_option_t mp_opts[] = {
     OPT_STRING("screenshot-template", screenshot_template, 0),
     OPT_STRING("screenshot-directory", screenshot_directory, M_OPT_FILE),
 
-    OPT_STRING("record-file", record_file, M_OPT_FILE),
+    OPT_STRING("record-file", record_file, M_OPT_FILE, .deprecation_message =
+               "use --stream-record or the dump-cache command"),
 
     OPT_SUBSTRUCT("", resample_opts, resample_conf, 0),
 
@@ -699,6 +671,7 @@ const m_option_t mp_opts[] = {
 
     OPT_SUBSTRUCT("", vo, vo_sub_opts, 0),
     OPT_SUBSTRUCT("", demux_opts, demux_conf, 0),
+    OPT_SUBSTRUCT("", demux_cache_opts, demux_cache_conf, 0),
 
     OPT_SUBSTRUCT("", gl_video_opts, gl_video_conf, 0),
     OPT_SUBSTRUCT("", spirv_opts, spirv_conf, 0),
@@ -763,7 +736,6 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("cursor-autohide-delay", "cursor-autohide"),
     OPT_REPLACED("delay", "audio-delay"),
     OPT_REMOVED("dumpstream", "use --stream-dump=<filename>"),
-    OPT_REPLACED("dvdangle", "dvd-angle"),
     OPT_REPLACED("endpos", "length"),
     OPT_REPLACED("font", "osd-font"),
     OPT_REPLACED("forcedsubsonly", "sub-forced-only"),
@@ -861,6 +833,7 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("sub-paths", "sub-file-paths"),
     OPT_REMOVED("heartbeat-cmd", "use Lua scripting instead"),
     OPT_REMOVED("no-ometadata", "use --no-ocopy-metadata"),
+    OPT_REMOVED("chapter", "use '--start=#123' '--end=#124' (for chapter 123)"),
 
     {0}
 };
@@ -905,7 +878,6 @@ const struct MPOpts mp_default_opts = {
     .hls_bitrate = INT_MAX,
     .cache_pause = 1,
     .cache_pause_wait = 1.0,
-    .chapterrange = {-1, -1},
     .ab_loop = {MP_NOPTS_VALUE, MP_NOPTS_VALUE},
     .edition_id = -1,
     .default_max_pts_correction = -1,
@@ -938,6 +910,9 @@ const struct MPOpts mp_default_opts = {
     .audiofile_auto = -1,
     .osd_bar_visible = 1,
     .screenshot_template = "mpv-shot%n",
+    .play_dir = 1,
+    .video_reverse_size = 1 * 1024 * 1024 * 1024,
+    .audio_reverse_size = 64 * 1024 * 1024,
 
     .audio_output_channels = {
         .set = 1,

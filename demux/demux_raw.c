@@ -38,8 +38,6 @@
 #include "video/fmt-conversion.h"
 #include "video/img_format.h"
 
-#include "osdep/endian.h"
-
 struct demux_rawaudio_opts {
     struct m_channels channels;
     int samplerate;
@@ -49,7 +47,7 @@ struct demux_rawaudio_opts {
 // Ad-hoc schema to systematically encode the format as int
 #define PCM(sign, is_float, bits, is_be) \
     ((sign) | ((is_float) << 1) | ((is_be) << 2) | ((bits) << 3))
-#define NE (BYTE_ORDER == BIG_ENDIAN)
+#define NE 0
 
 #define OPT_BASE_STRUCT struct demux_rawaudio_opts
 const struct m_sub_options demux_rawaudio_conf = {
@@ -269,27 +267,30 @@ static int demux_rawvideo_open(demuxer_t *demuxer, enum demux_check check)
     return generic_open(demuxer);
 }
 
-static int raw_fill_buffer(demuxer_t *demuxer)
+static bool raw_read_packet(struct demuxer *demuxer, struct demux_packet **pkt)
 {
     struct priv *p = demuxer->priv;
 
     if (demuxer->stream->eof)
-        return 0;
+        return false;
 
     struct demux_packet *dp = new_demux_packet(p->frame_size * p->read_frames);
     if (!dp) {
         MP_ERR(demuxer, "Can't read packet.\n");
-        return 1;
+        return true;
     }
 
+    dp->keyframe = true;
     dp->pos = stream_tell(demuxer->stream);
     dp->pts = (dp->pos  / p->frame_size) / p->frame_rate;
 
     int len = stream_read(demuxer->stream, dp->buffer, dp->len);
     demux_packet_shorten(dp, len);
-    demux_add_packet(p->sh, dp);
 
-    return 1;
+    dp->stream = p->sh->index;
+    *pkt = dp;
+
+    return true;
 }
 
 static void raw_seek(demuxer_t *demuxer, double seek_pts, int flags)
@@ -298,7 +299,9 @@ static void raw_seek(demuxer_t *demuxer, double seek_pts, int flags)
     stream_t *s = demuxer->stream;
     int64_t end = 0;
     stream_control(s, STREAM_CTRL_GET_SIZE, &end);
-    int64_t pos = seek_pts * p->frame_rate * p->frame_size;
+    int64_t frame_nr = seek_pts * p->frame_rate;
+    frame_nr = frame_nr - (frame_nr % p->read_frames);
+    int64_t pos = frame_nr * p->frame_size;
     if (flags & SEEK_FACTOR)
         pos = end * seek_pts;
     if (pos < 0)
@@ -312,7 +315,7 @@ const demuxer_desc_t demuxer_desc_rawaudio = {
     .name = "rawaudio",
     .desc = "Uncompressed audio",
     .open = demux_rawaudio_open,
-    .fill_buffer = raw_fill_buffer,
+    .read_packet = raw_read_packet,
     .seek = raw_seek,
 };
 
@@ -320,6 +323,6 @@ const demuxer_desc_t demuxer_desc_rawvideo = {
     .name = "rawvideo",
     .desc = "Uncompressed video",
     .open = demux_rawvideo_open,
-    .fill_buffer = raw_fill_buffer,
+    .read_packet = raw_read_packet,
     .seek = raw_seek,
 };

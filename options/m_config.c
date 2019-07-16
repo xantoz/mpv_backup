@@ -57,6 +57,13 @@ static const union m_option_value default_value;
 struct m_config_shadow {
     struct m_config *root;
     pthread_mutex_t lock;
+    // -- immutable after init
+    // List of m_sub_options instances.
+    // Index 0 is the top-level and is always present.
+    // Immutable after init.
+    // Invariant: a parent is always at a lower index than any of its children.
+    struct m_config_group *groups;
+    int num_groups;
     // -- protected by lock
     struct m_config_data *data; // protected shadow copy of the option data
     struct m_config_cache **listeners;
@@ -67,20 +74,19 @@ struct m_config_shadow {
 struct m_config_group {
     const struct m_sub_options *group;
     int group_count;    // 1 + number of all sub groups owned by this (so
-                        // m_config.groups[idx..idx+group_count] is used by the
-                        // entire tree of sub groups included by this group)
-    int parent_group;   // index of parent group into m_config.groups[], or
-                        // -1 for group 0
+                        // m_config_shadow.groups[idx..idx+group_count] is used
+                        // by the entire tree of sub groups included by this
+                        // group)
+    int parent_group;   // index of parent group into m_config_shadow.groups[],
+                        // or -1 for group 0
     int parent_ptr;     // ptr offset in the parent group's data, or -1 if
                         // none
-    int co_index;       // index of the first group opt into m_config.opts[]
-    int co_end_index;   // index of the last group opt + 1 (i.e. exclusive)
 };
 
 // A copy of option data. Used for the main option struct, the shadow data,
 // and copies for m_config_cache.
 struct m_config_data {
-    struct m_config *root;          // root config (with up-to-date data)
+    struct m_config_shadow *shadow; // option definitions etc., main data copy
     int group_index;                // start index into m_config.groups[]
     struct m_group_data *gdata;     // user struct allocation (our copy of data)
     int num_gdata;                  // (group_index+num_gdata = end index)
@@ -197,8 +203,8 @@ static void alloc_group(struct m_config_data *data, int group_index,
                         struct m_config_data *copy)
 {
     assert(group_index == data->group_index + data->num_gdata);
-    assert(group_index < data->root->num_groups);
-    struct m_config_group *group = &data->root->groups[group_index];
+    assert(group_index < data->shadow->num_groups);
+    struct m_config_group *group = &data->shadow->groups[group_index];
     const struct m_sub_options *opts = group->group;
 
     MP_TARRAY_GROW(data, data->gdata, data->num_gdata);
@@ -217,19 +223,18 @@ static void alloc_group(struct m_config_data *data, int group_index,
 
     char *copy_src = copy_gdata ? copy_gdata->udata : NULL;
 
-    for (int n = group->co_index; n < group->co_end_index; n++) {
-        assert(n >= 0 && n < data->root->num_opts);
-        struct m_config_option *co = &data->root->opts[n];
+    for (int n = 0; opts->opts && opts->opts[n].name; n++) {
+        const struct m_option *opt = &opts->opts[n];
 
-        if (co->opt->offset < 0 || co->opt->type->size == 0)
+        if (opt->offset < 0 || opt->type->size == 0)
             continue;
 
-        void *dst = gdata->udata + co->opt->offset;
-        const void *defptr = co->opt->defval ? co->opt->defval : dst;
+        void *dst = gdata->udata + opt->offset;
+        const void *defptr = opt->defval ? opt->defval : dst;
         if (copy_src)
-            defptr = copy_src + co->opt->offset;
+            defptr = copy_src + opt->offset;
 
-        init_opt_inplace(co->opt, dst, defptr);
+        init_opt_inplace(opt, dst, defptr);
     }
 
     // If there's a parent, update its pointer to the new struct.
@@ -248,34 +253,36 @@ static void free_option_data(void *p)
 
     for (int i = 0; i < data->num_gdata; i++) {
         struct m_group_data *gdata = &data->gdata[i];
-        struct m_config_group *group = &data->root->groups[data->group_index + i];
+        struct m_config_group *group =
+            &data->shadow->groups[data->group_index + i];
+        const struct m_option *opts = group->group->opts;
 
-        for (int n = group->co_index; n < group->co_end_index; n++) {
-            struct m_config_option *co = &data->root->opts[n];
+        for (int n = 0; opts && opts[n].name; n++) {
+            const struct m_option *opt = &opts[n];
 
-            if (co->opt->offset >= 0 && co->opt->type->size > 0)
-                m_option_free(co->opt, gdata->udata + co->opt->offset);
+            if (opt->offset >= 0 && opt->type->size > 0)
+                m_option_free(opt, gdata->udata + opt->offset);
         }
     }
 }
 
-// Allocate data using the option description in root, starting at group_index
+// Allocate data using the option description in shadow, starting at group_index
 // (index into m_config.groups[]).
 // If copy is not NULL, copy all data from there (for groups which are in both
 // m_config_data instances), in all other cases init the data with the defaults.
 static struct m_config_data *allocate_option_data(void *ta_parent,
-                                                  struct m_config *root,
+                                                  struct m_config_shadow *shadow,
                                                   int group_index,
                                                   struct m_config_data *copy)
 {
-    assert(group_index >= 0 && group_index < root->num_groups);
+    assert(group_index >= 0 && group_index < shadow->num_groups);
     struct m_config_data *data = talloc_zero(ta_parent, struct m_config_data);
     talloc_set_destructor(data, free_option_data);
 
-    data->root = root;
+    data->shadow = shadow;
     data->group_index = group_index;
 
-    struct m_config_group *root_group = &root->groups[group_index];
+    struct m_config_group *root_group = &shadow->groups[group_index];
     assert(root_group->group_count > 0);
 
     for (int n = group_index; n < group_index + root_group->group_count; n++)
@@ -292,14 +299,15 @@ static void config_destroy(void *p)
     struct m_config *config = p;
     m_config_restore_backups(config);
 
+    talloc_free(config->data);
+
     if (config->shadow) {
         // must all have been unregistered
         assert(config->shadow->num_listeners == 0);
+        talloc_free(config->shadow->data);
         pthread_mutex_destroy(&config->shadow->lock);
         talloc_free(config->shadow);
     }
-
-    talloc_free(config->data);
 }
 
 struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
@@ -309,6 +317,10 @@ struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
     struct m_config *config = talloc(talloc_ctx, struct m_config);
     talloc_set_destructor(config, config_destroy);
     *config = (struct m_config){.log = log,};
+
+    config->shadow = talloc_zero(NULL, struct m_config_shadow);
+    pthread_mutex_init(&config->shadow->lock, NULL);
+    config->shadow->root = config;
 
     struct m_sub_options *subopts = talloc_ptrtype(config, subopts);
     *subopts = (struct m_sub_options){
@@ -321,8 +333,11 @@ struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
     if (!size)
         return config;
 
-    config->data = allocate_option_data(config, config, 0, NULL);
+    config->data = allocate_option_data(config, config->shadow, 0, NULL);
     config->optstruct = config->data->gdata[0].udata;
+
+    config->shadow->data =
+        allocate_option_data(config->shadow, config->shadow, 0, config->data);
 
     for (int n = 0; n < config->num_opts; n++) {
         struct m_config_option *co = &config->opts[n];
@@ -348,7 +363,6 @@ static struct m_config *m_config_from_obj_desc(void *talloc_ctx,
     return c;
 }
 
-// Like m_config_from_obj_desc(), but don't allocate option struct.
 struct m_config *m_config_from_obj_desc_noalloc(void *talloc_ctx,
                                                 struct mp_log *log,
                                                 struct m_obj_desc *desc)
@@ -360,21 +374,15 @@ static const struct m_config_group *find_group(struct mpv_global *global,
                                                const struct m_option *cfg)
 {
     struct m_config_shadow *shadow = global->config;
-    struct m_config *root = shadow->root;
 
-    for (int n = 0; n < root->num_groups; n++) {
-        if (root->groups[n].group->opts == cfg)
-            return &root->groups[n];
+    for (int n = 0; n < shadow->num_groups; n++) {
+        if (shadow->groups[n].group->opts == cfg)
+            return &shadow->groups[n];
     }
 
     return NULL;
 }
 
-// Allocate a priv struct that is backed by global options (like AOs and VOs,
-// anything that uses m_obj_list.use_global_options == true).
-// The result contains a snapshot of the current option values of desc->options.
-// For convenience, desc->options can be NULL; then priv struct is allocated
-// with just zero (or priv_defaults if set).
 void *m_config_group_from_desc(void *ta_parent, struct mp_log *log,
         struct mpv_global *global, struct m_obj_desc *desc, const char *name)
 {
@@ -515,48 +523,32 @@ static void add_sub_group(struct m_config *config, const char *name_prefix,
                           int parent_group_index, int parent_ptr,
                           const struct m_sub_options *subopts)
 {
-        // Can't be used multiple times.
-    for (int n = 0; n < config->num_groups; n++)
-        assert(config->groups[n].group != subopts);
+    struct m_config_shadow *shadow = config->shadow;
+
+    // Can't be used multiple times.
+    for (int n = 0; n < shadow->num_groups; n++)
+        assert(shadow->groups[n].group != subopts);
 
     // You can only use UPDATE_ flags here.
     assert(!(subopts->change_flags & ~(unsigned)UPDATE_OPTS_MASK));
 
-    assert(parent_group_index >= -1 && parent_group_index < config->num_groups);
+    assert(parent_group_index >= -1 && parent_group_index < shadow->num_groups);
 
-    int group_index = config->num_groups++;
-    MP_TARRAY_GROW(config, config->groups, group_index);
-    config->groups[group_index] = (struct m_config_group){
+    int group_index = shadow->num_groups++;
+    MP_TARRAY_GROW(shadow, shadow->groups, group_index);
+    shadow->groups[group_index] = (struct m_config_group){
         .group = subopts,
         .parent_group = parent_group_index,
         .parent_ptr = parent_ptr,
-        .co_index = config->num_opts,
     };
 
-    if (subopts->prefix && subopts->prefix[0])
-        name_prefix = subopts->prefix;
     if (!name_prefix)
         name_prefix = "";
-
-    for (int i = 0; subopts->opts && subopts->opts[i].name; i++) {
-        const struct m_option *opt = &subopts->opts[i];
-
-        if (opt->type == &m_option_type_subconfig)
-            continue;
-
-        struct m_config_option co = {
-            .name = concat_name(config, name_prefix, opt->name),
-            .opt = opt,
-            .group_index = group_index,
-            .is_hidden = !!opt->deprecation_message,
-        };
-        MP_TARRAY_APPEND(config, config->opts, config->num_opts, co);
+    if (subopts->prefix && subopts->prefix[0]) {
+        assert(!name_prefix[0]);
+        name_prefix = subopts->prefix;
     }
 
-    config->groups[group_index].co_end_index = config->num_opts;
-
-    // Initialize sub-structs. These have to come after, because co_index and
-    // co_end_index must strictly be for a single struct only.
     for (int i = 0; subopts->opts && subopts->opts[i].name; i++) {
         const struct m_option *opt = &subopts->opts[i];
 
@@ -571,13 +563,25 @@ static void add_sub_group(struct m_config *config, const char *name_prefix,
 
             const char *prefix = concat_name(config, name_prefix, opt->name);
             add_sub_group(config, prefix, group_index, opt->offset, new_subopts);
-        } else if (opt->type == &m_option_type_obj_settings_list) {
-            const struct m_obj_list *objlist = opt->priv;
-            init_obj_settings_list(config, group_index, objlist);
+
+        } else {
+
+            struct m_config_option co = {
+                .name = concat_name(config, name_prefix, opt->name),
+                .opt = opt,
+                .group_index = group_index,
+                .is_hidden = !!opt->deprecation_message,
+            };
+            MP_TARRAY_APPEND(config, config->opts, config->num_opts, co);
+
+            if (opt->type == &m_option_type_obj_settings_list) {
+                const struct m_obj_list *objlist = opt->priv;
+                init_obj_settings_list(config, group_index, objlist);
+            }
         }
     }
 
-    config->groups[group_index].group_count = config->num_groups - group_index;
+    shadow->groups[group_index].group_count = shadow->num_groups - group_index;
 }
 
 struct m_config_option *m_config_get_co_raw(const struct m_config *config,
@@ -671,7 +675,9 @@ const void *m_config_get_co_default(const struct m_config *config,
     if (co->opt->defval)
         return co->opt->defval;
 
-    const struct m_sub_options *subopt = config->groups[co->group_index].group;
+    const struct m_sub_options *subopt =
+        config->shadow->groups[co->group_index].group;
+
     if (co->opt->offset >= 0 && subopt->defaults)
         return (char *)subopt->defaults + co->opt->offset;
 
@@ -736,7 +742,7 @@ void m_config_mark_co_flags(struct m_config_option *co, int flags)
         co->is_set_from_config = true;
 }
 
-// Special options that don't really fit into the option handling mode. They
+// Special options that don't really fit into the option handling model. They
 // usually store no data, but trigger actions. Caller is assumed to have called
 // handle_set_opt_flags() to make sure the option can be set.
 // Returns M_OPT_UNKNOWN if the option is not a special option.
@@ -804,8 +810,6 @@ static int m_config_handle_special_options(struct m_config *config,
     return M_OPT_UNKNOWN;
 }
 
-// Unlike m_config_set_option_raw() this does not go through the property layer
-// via config.option_set_callback.
 int m_config_set_option_raw_direct(struct m_config *config,
                                    struct m_config_option *co,
                                    void *data, int flags)
@@ -834,9 +838,6 @@ int m_config_set_option_raw_direct(struct m_config *config,
     return 0;
 }
 
-// Similar to m_config_set_option_cli(), but set as data in its native format.
-// This takes care of some details like sending change notifications.
-// The type data points to is as in: co->opt
 int m_config_set_option_raw(struct m_config *config, struct m_config_option *co,
                             void *data, int flags)
 {
@@ -923,10 +924,6 @@ static struct m_config_option *m_config_mogrify_cli_opt(struct m_config *config,
     return NULL;
 }
 
-// Set the named option to the given string. This is for command line and config
-// file use only.
-// flags: combination of M_SETOPT_* flags (0 for normal operation)
-// Returns >= 0 on success, otherwise see OptionParserReturn.
 int m_config_set_option_cli(struct m_config *config, struct bstr name,
                             struct bstr param, int flags)
 {
@@ -1239,20 +1236,6 @@ struct mpv_node m_config_get_profiles(struct m_config *config)
     return root;
 }
 
-void m_config_create_shadow(struct m_config *config)
-{
-    assert(config->global);
-    assert(!config->shadow && !config->global->config);
-
-    config->shadow = talloc_zero(NULL, struct m_config_shadow);
-    config->shadow->data =
-        allocate_option_data(config->shadow, config, 0, config->data);
-    config->shadow->root = config;
-    pthread_mutex_init(&config->shadow->lock, NULL);
-
-    config->global->config = config->shadow;
-}
-
 static void cache_destroy(void *p)
 {
     struct m_config_cache *cache = p;
@@ -1268,12 +1251,11 @@ struct m_config_cache *m_config_cache_alloc(void *ta_parent,
                                             const struct m_sub_options *group)
 {
     struct m_config_shadow *shadow = global->config;
-    struct m_config *root = shadow->root;
     int group_index = -1;
 
-    for (int n = 0; n < root->num_groups; n++) {
+    for (int n = 0; n < shadow->num_groups; n++) {
         // group==NULL is special cased to root group.
-        if (root->groups[n].group == group || (!group && !n)) {
+        if (shadow->groups[n].group == group || (!group && !n)) {
             group_index = n;
             break;
         }
@@ -1286,7 +1268,7 @@ struct m_config_cache *m_config_cache_alloc(void *ta_parent,
     cache->shadow = shadow;
 
     pthread_mutex_lock(&shadow->lock);
-    cache->data = allocate_option_data(cache, root, group_index, shadow->data);
+    cache->data = allocate_option_data(cache, shadow, group_index, shadow->data);
     pthread_mutex_unlock(&shadow->lock);
 
     cache->opts = cache->data->gdata[0].udata;
@@ -1296,7 +1278,7 @@ struct m_config_cache *m_config_cache_alloc(void *ta_parent,
 
 static bool update_options(struct m_config_data *dst, struct m_config_data *src)
 {
-    assert(dst->root == src->root);
+    assert(dst->shadow == src->shadow);
 
     bool res = false;
     dst->ts = src->ts;
@@ -1305,9 +1287,10 @@ static bool update_options(struct m_config_data *dst, struct m_config_data *src)
     int group_s = MPMAX(dst->group_index, src->group_index);
     int group_e = MPMIN(dst->group_index + dst->num_gdata,
                         src->group_index + src->num_gdata);
-    assert(group_s >= 0 && group_e <= dst->root->num_groups);
+    assert(group_s >= 0 && group_e <= dst->shadow->num_groups);
     for (int n = group_s; n < group_e; n++) {
-        struct m_config_group *g = &dst->root->groups[n];
+        struct m_config_group *g = &dst->shadow->groups[n];
+        const struct m_option *opts = g->group->opts;
         struct m_group_data *gsrc = m_config_gdata(src, n);
         struct m_group_data *gdst = m_config_gdata(dst, n);
         assert(gsrc && gdst);
@@ -1317,11 +1300,12 @@ static bool update_options(struct m_config_data *dst, struct m_config_data *src)
         gdst->ts = gsrc->ts;
         res = true;
 
-        for (int i = g->co_index; i < g->co_end_index; i++) {
-            struct m_config_option *co = &dst->root->opts[i];
-            if (co->opt->offset >= 0 && co->opt->type->size) {
-                m_option_copy(co->opt, gdst->udata + co->opt->offset,
-                                       gsrc->udata + co->opt->offset);
+        for (int i = 0; opts && opts[i].name; i++) {
+            const struct m_option *opt = &opts[i];
+
+            if (opt->offset >= 0 && opt->type->size) {
+                m_option_copy(opt, gdst->udata + opt->offset,
+                                   gsrc->udata + opt->offset);
             }
         }
     }
@@ -1374,7 +1358,7 @@ void m_config_notify_change_co(struct m_config *config,
     int changed = co->opt->flags & UPDATE_OPTS_MASK;
     int group_index = co->group_index;
     while (group_index >= 0) {
-        struct m_config_group *g = &config->groups[group_index];
+        struct m_config_group *g = &shadow->groups[group_index];
         changed |= g->group->change_flags;
         group_index = g->parent_group;
     }
@@ -1407,9 +1391,14 @@ void m_config_cache_set_wakeup_cb(struct m_config_cache *cache,
     pthread_mutex_lock(&shadow->lock);
     if (cache->in_list) {
         for (int n = 0; n < shadow->num_listeners; n++) {
-            if (shadow->listeners[n] == cache)
+            if (shadow->listeners[n] == cache) {
                 MP_TARRAY_REMOVE_AT(shadow->listeners, shadow->num_listeners, n);
+                break;
+            }
         }
+        for (int n = 0; n < shadow->num_listeners; n++)
+            assert(shadow->listeners[n] != cache); // only 1 wakeup_cb per cache
+        // (The deinitialization path relies on this to free all memory.)
         if (!shadow->num_listeners) {
             talloc_free(shadow->listeners);
             shadow->listeners = NULL;
@@ -1485,9 +1474,4 @@ void mp_read_option_raw(struct mpv_global *global, const char *name,
 
     memset(dst, 0, co->opt->type->size);
     m_option_copy(co->opt, dst, gdata->udata + co->opt->offset);
-}
-
-struct m_config *mp_get_root_config(struct mpv_global *global)
-{
-    return global->config->root;
 }

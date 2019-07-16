@@ -18,9 +18,7 @@ def __test_and_add_flags__(ctx, flags):
 
 def __add_generic_flags__(ctx):
     ctx.env.CFLAGS += ["-D_ISOC99_SOURCE", "-D_GNU_SOURCE",
-                       "-D_LARGEFILE_SOURCE", "-D_FILE_OFFSET_BITS=64",
-                       "-D_LARGEFILE64_SOURCE",
-                       "-Wall"]
+                       "-D_FILE_OFFSET_BITS=64", "-Wall"]
 
     if ctx.check_cc(cflags="-std=c11", mandatory=False):
         ctx.env.CFLAGS += ["-std=c11"]
@@ -42,7 +40,8 @@ def __add_generic_flags__(ctx):
                                  "-Wno-format-zero-length",
                                  "-Werror=format-security",
                                  "-Wno-redundant-decls",
-                                 "-Wvla"])
+                                 "-Wvla",
+                                 "-Wno-format-truncation"])
 
 def __add_gcc_flags__(ctx):
     ctx.env.CFLAGS += ["-Wall", "-Wundef", "-Wmissing-prototypes", "-Wshadow",
@@ -64,8 +63,8 @@ def __add_mswin_flags__(ctx):
 
 def __add_mingw_flags__(ctx):
     __add_mswin_flags__(ctx)
-    ctx.env.CFLAGS += ['-municode', '-D__USE_MINGW_ANSI_STDIO=1']
-    ctx.env.LAST_LINKFLAGS += ['-municode', '-mwindows']
+    ctx.env.CFLAGS += ['-D__USE_MINGW_ANSI_STDIO=1']
+    ctx.env.LAST_LINKFLAGS += ['-mwindows']
 
 def __add_cygwin_flags__(ctx):
     __add_mswin_flags__(ctx)

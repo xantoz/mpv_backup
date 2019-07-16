@@ -201,6 +201,8 @@ static void uninit_demuxer(struct MPContext *mpctx)
     mpctx->chapters = NULL;
     mpctx->num_chapters = 0;
 
+    mp_abort_cache_dumping(mpctx);
+
     struct demuxer **demuxers = NULL;
     int num_demuxers = 0;
 
@@ -302,7 +304,7 @@ void update_demuxer_properties(struct MPContext *mpctx)
     struct demuxer *demuxer = mpctx->demuxer;
     if (!demuxer)
         return;
-    demux_update(demuxer);
+    demux_update(demuxer, get_current_time(mpctx));
     int events = demuxer->events;
     if ((events & DEMUX_EVENT_INIT) && demuxer->num_editions > 1) {
         for (int n = 0; n < demuxer->num_editions; n++) {
@@ -724,7 +726,9 @@ int mp_add_external_file(struct MPContext *mpctx, char *filename,
     if (strncmp(disp_filename, "memory://", 9) == 0)
         disp_filename = "memory://"; // avoid noise
 
-    struct demuxer_params params = {0};
+    struct demuxer_params params = {
+        .is_top_level = true,
+    };
 
     switch (filter) {
     case STREAM_SUB:
@@ -819,14 +823,7 @@ void autoload_external_files(struct MPContext *mpctx, struct mp_cancel *cancel)
         return;
 
     void *tmp = talloc_new(NULL);
-    char *base_filename = mpctx->filename;
-    char *stream_filename = NULL;
-    if (mpctx->demuxer) {
-        if (demux_stream_control(mpctx->demuxer, STREAM_CTRL_GET_BASE_FILENAME,
-                                    &stream_filename) > 0)
-            base_filename = talloc_steal(tmp, stream_filename);
-    }
-    struct subfn *list = find_external_files(mpctx->global, base_filename,
+    struct subfn *list = find_external_files(mpctx->global, mpctx->filename,
                                              mpctx->opts);
     talloc_steal(tmp, list);
 
@@ -975,6 +972,7 @@ static void *open_demux_thread(void *ctx)
         .force_format = mpctx->open_format,
         .stream_flags = mpctx->open_url_flags,
         .stream_record = true,
+        .is_top_level = true,
     };
     mpctx->open_res_demuxer =
         demux_open_url(mpctx->open_url, &p, mpctx->open_cancel, mpctx->global);
@@ -1406,7 +1404,10 @@ static void play_current_file(struct MPContext *mpctx)
 
     handle_force_window(mpctx, false);
 
-    MP_INFO(mpctx, "Playing: %s\n", mpctx->filename);
+    if (mpctx->playlist->first != mpctx->playing ||
+        mpctx->playlist->last != mpctx->playing ||
+        mpctx->playing->num_redirects)
+        MP_INFO(mpctx, "Playing: %s\n", mpctx->filename);
 
     assert(mpctx->demuxer == NULL);
 
@@ -1436,7 +1437,7 @@ static void play_current_file(struct MPContext *mpctx)
     if (mpctx->demuxer->playlist) {
         struct playlist *pl = mpctx->demuxer->playlist;
         int entry_stream_flags = 0;
-        if (!pl->disable_safety) {
+        if (!pl->disable_safety && !mpctx->opts->load_unsafe_playlists) {
             entry_stream_flags = STREAM_SAFE_ONLY;
             if (mpctx->demuxer->is_network)
                 entry_stream_flags |= STREAM_NETWORK_ONLY;
@@ -1541,15 +1542,27 @@ static void play_current_file(struct MPContext *mpctx)
         goto terminate_playback;
     }
 
-    double play_start_pts = get_play_start_pts(mpctx);
-    if (play_start_pts != MP_NOPTS_VALUE) {
-        /*
-         * get_play_start_pts returns rebased values, but
-         * we want an un rebased value to feed to seeker.
-         */
-        if (!opts->rebase_start_time){
-            play_start_pts += mpctx->demuxer->start_time;
+    demux_start_prefetch(mpctx->demuxer);
+
+    if (opts->demuxer_cache_wait) {
+        while (!mpctx->stop_play) {
+            struct demux_reader_state s;
+            demux_get_reader_state(mpctx->demuxer, &s);
+            if (s.idle)
+                break;
+
+            mp_idle(mpctx);
         }
+    }
+
+    // (Not get_play_start_pts(), which would always trigger a seek.)
+    double play_start_pts = rel_time_to_abs(mpctx, opts->play_start);
+
+    // Backward playback -> start from end by default.
+    if (play_start_pts == MP_NOPTS_VALUE && opts->play_dir < 0)
+        play_start_pts = get_start_time(mpctx, -1);
+
+    if (play_start_pts != MP_NOPTS_VALUE) {
         queue_seek(mpctx, MPSEEK_ABSOLUTE, play_start_pts, MPSEEK_DEFAULT, 0);
         execute_queued_seek(mpctx);
     }
@@ -1859,4 +1872,3 @@ void open_recorder(struct MPContext *mpctx, bool on_init)
 
     talloc_free(streams);
 }
-

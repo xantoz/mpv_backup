@@ -187,8 +187,12 @@ static void ao_chain_reset_state(struct ao_chain *ao_c)
 
 void reset_audio_state(struct MPContext *mpctx)
 {
-    if (mpctx->ao_chain)
+    if (mpctx->ao_chain) {
         ao_chain_reset_state(mpctx->ao_chain);
+        struct track *t = mpctx->ao_chain->track;
+        if (t && t->dec)
+            t->dec->play_dir = mpctx->play_dir;
+    }
     mpctx->audio_status = mpctx->ao_chain ? STATUS_SYNCING : STATUS_EOF;
     mpctx->delay = 0;
     mpctx->audio_drop_throttle = 0;
@@ -736,6 +740,8 @@ static int filter_audio(struct MPContext *mpctx, struct mp_audio_buffer *outbuf,
     struct ao_chain *ao_c = mpctx->ao_chain;
 
     double endpts = get_play_end_pts(mpctx);
+    if (endpts != MP_NOPTS_VALUE)
+        endpts *= mpctx->play_dir;
 
     bool eof = false;
     if (!copy_output(mpctx, ao_c, minsamples, endpts, &eof))

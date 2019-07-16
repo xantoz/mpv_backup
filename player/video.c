@@ -95,8 +95,12 @@ static void vo_chain_reset_state(struct vo_chain *vo_c)
 
 void reset_video_state(struct MPContext *mpctx)
 {
-    if (mpctx->vo_chain)
+    if (mpctx->vo_chain) {
         vo_chain_reset_state(mpctx->vo_chain);
+        struct track *t = mpctx->vo_chain->track;
+        if (t && t->dec)
+            t->dec->play_dir = mpctx->play_dir;
+    }
 
     for (int n = 0; n < mpctx->num_next_frames; n++)
         mp_image_unrefp(&mpctx->next_frames[n]);
@@ -483,6 +487,8 @@ static int video_output_image(struct MPContext *mpctx)
         }
         if (img) {
             double endpts = get_play_end_pts(mpctx);
+            if (endpts != MP_NOPTS_VALUE)
+                endpts *= mpctx->play_dir;
             if ((endpts != MP_NOPTS_VALUE && img->pts >= endpts) ||
                 mpctx->max_frames == 0)
             {
@@ -1030,12 +1036,13 @@ void write_video(struct MPContext *mpctx)
 
         // Wait for the VO to signal actual EOF, then exit if the frame timer
         // has expired.
+        bool has_frame = vo_has_frame(vo); // maybe not configured
         if (mpctx->video_status == STATUS_DRAINING &&
-            vo_is_ready_for_frame(vo, -1))
+            (vo_is_ready_for_frame(vo, -1) || !has_frame))
         {
             mpctx->time_frame -= get_relative_time(mpctx);
             mp_set_timeout(mpctx, mpctx->time_frame);
-            if (mpctx->time_frame <= 0) {
+            if (mpctx->time_frame <= 0 || !has_frame) {
                 MP_VERBOSE(mpctx, "video EOF reached\n");
                 mpctx->video_status = STATUS_EOF;
                 encode_lavc_stream_eof(mpctx->encode_lavc_ctx, STREAM_VIDEO);

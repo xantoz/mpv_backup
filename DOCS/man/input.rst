@@ -920,9 +920,75 @@ Input Commands that are Possibly Subject to Change
         equivalent is ``--glsl-shaders-append=file.glsl`` or alternatively
         ``--glsl-shader=file.glsl``.
 
+``dump-cache <start> <end> <filename>``
+    Dump the current cache to the given filename. The ``<filename>`` file is
+    overwritten if it already exists. ``<start>`` and ``<end>`` give the
+    time range of what to dump. If no data is cached at the given time range,
+    nothing may be dumped (creating a file with no packets).
 
-Undocumented commands: ``tv-last-channel`` (TV/DVB only),
-``ao-reload`` (experimental/internal).
+    Dumping a larger part of the cache will freeze the player. No effort was
+    made to fix this, as this feature was meant mostly for creating small
+    excerpts.
+
+    See ``--stream-record`` for various caveats that mostly apply to this
+    command too, as both use the same underlying code for writing the output
+    file.
+
+    If ``<filename>`` is an empty string, an ongoing ``dump-cache`` is stopped.
+
+    If ``<end>`` is ``no``, then continuous dumping is enabled. Then, after
+    dumping the existing parts of the cache, anything read from network is
+    appended to the cache as well. This behaves similar to ``--stream-record``
+    (although it does not conflict with that option, and they can be both active
+    at the same time).
+
+    If the ``<end>`` time is after the cache, the command will _not_ wait and
+    write newly received data to it.
+
+    The end of the resulting file may be slightly damaged or incomplete at the
+    end. (Not enough effort was made to ensure that the end lines up properly.)
+
+    Note that this command will finish only once dumping ends. That means it
+    works similar to the ``screenshot`` command, just that it can block much
+    longer. If continuous dumping is used, the command will not finish until
+    playback is stopped, an error happens, another ``dump-cache`` command is
+    run, or an API like ``mp.abort_async_command`` was called to explicitly stop
+    the command. See `Synchronous vs. Asynchronous`_.
+
+    .. note::
+
+        This was mostly created for network streams. For local files, there may
+        be much better methods to create excerpts and such. There are tons of
+        much more user-friendly Lua scripts, that will reencode parts of a file
+        by spawning a separate instance of ``ffmpeg``. With network streams,
+        this is not that easily possible, as the stream would have to be
+        downloaded again. Even if ``--stream-record`` is used to record the
+        stream to the local filesystem, there may be problems, because the
+        recorded file is still written to.
+
+    This command is experimental, and all details about it may change in the
+    future.
+
+``ab-loop-dump-cache <filename>``
+    Essentially calls ``dump-cache`` with the current AB-loop points as
+    arguments. Like ``dump-cache``, this will overwrite the file at
+    ``<filename>``. Likewise, if the B point is set to ``no``, it will enter
+    continuous dumping after the existing cache was dumped.
+
+    The author reserves the right to remove this command if enough motivation
+    is found to move this functionality to a trivial Lua script.
+
+``ab-loop-align-cache``
+    Re-adjust the A/B loop points to the start and end within the cache the
+    ``ab-loop-dump-cache`` command will (probably) dump. Basically, it aligns
+    the times on keyframes. The guess might be off especially at the end (due to
+    granularity issues due to remuxing). If the cache shrinks in the meantime,
+    the points set by the command will not be the effective parameters either.
+
+    This command has an even more uncertain future than ``ab-loop-dump-cache``
+    and might disappear without replacement if the author decides it's useless.
+
+Undocumented commands: ``ao-reload`` (experimental/internal).
 
 Hooks
 ~~~~~
@@ -1077,6 +1143,8 @@ command behaves by itself. There are the following cases:
 - Async libmpv command API (e.g. ``mpv_command_async()``) never blocks the
   caller, and always notify their completion with a message. The ``sync`` and
   ``async`` prefixes make no difference.
+- Lua also provides APIs for running async commands, which behave similar to the
+  C counterparts.
 - In all cases, async mode can still run commands in a synchronous manner, even
   in detached mode. This can for example happen in cases when a command does not
   have an  asynchronous implementation. The async libmpv API still never blocks
@@ -1088,7 +1156,8 @@ default now, and ``async`` changes behavior only in the ways mentioned above.
 
 Currently the following commands have different waiting characteristics with
 sync vs. async: sub-add, audio-add, sub-reload, audio-reload,
-rescan-external-files, screenshot, screenshot-to-file.
+rescan-external-files, screenshot, screenshot-to-file, dump-cache,
+ab-loop-dump-cache.
 
 Input Sections
 --------------
@@ -1181,8 +1250,6 @@ Property list
 
 ``media-title``
     If the currently played file has a ``title`` tag, use that.
-
-    Otherwise, if the media type is DVD, return the volume ID of DVD.
 
     Otherwise, return the ``filename`` property.
 
@@ -1296,40 +1363,6 @@ Property list
     Current MKV edition number. Setting this property to a different value will
     restart playback. The number of the first edition is 0.
 
-``disc-titles``
-    Number of BD/DVD titles.
-
-    This has a number of sub-properties. Replace ``N`` with the 0-based edition
-    index.
-
-    ``disc-titles/count``
-        Number of titles.
-
-    ``disc-titles/id``
-        Title ID as integer. Currently, this is the same as the title index.
-
-    ``disc-titles/length``
-        Length in seconds. Can be unavailable in a number of cases (currently
-        it works for libdvdnav only).
-
-    When querying the property with the client API using ``MPV_FORMAT_NODE``,
-    or with Lua ``mp.get_property_native``, this will return a mpv_node with
-    the following contents:
-
-    ::
-
-        MPV_FORMAT_NODE_ARRAY
-            MPV_FORMAT_NODE_MAP (for each edition)
-                "id"                MPV_FORMAT_INT64
-                "length"            MPV_FORMAT_DOUBLE
-
-``disc-title-list``
-    List of BD/DVD titles.
-
-``disc-title`` (RW)
-    Current BD/DVD title number. Writing works only for ``dvdnav://`` and
-    ``bd://`` (and aliases for these).
-
 ``chapters``
     Number of chapters.
 
@@ -1368,9 +1401,6 @@ Property list
                 "id"                MPV_FORMAT_INT64
                 "title"             MPV_FORMAT_STRING
                 "default"           MPV_FORMAT_FLAG
-
-``angle`` (RW)
-    Current DVD angle.
 
 ``metadata``
     Metadata key/value pairs.
@@ -1490,8 +1520,21 @@ Property list
     buffering amount, while the seek ranges represent the buffered data that
     can actually be used for cached seeking.
 
+    ``bof-cached`` indicates whether the seek range with the lowest timestamp
+    points to the beginning of the stream (BOF). This implies you cannot seek
+    before this position at all. ``eof-cached`` indicates whether the seek range
+    with the highest timestamp points to the end of the stream (EOF). If both
+    ``bof-cached`` and ``eof-cached`` are set to ``yes``, and there's only 1
+    cache range, the entire stream is cached.
+
     ``fw-bytes`` is the number of bytes of packets buffered in the range
-    starting from the current decoding position.
+    starting from the current decoding position. This is a rough estimate
+    (may not account correctly for various overhead), and stops at the
+    demuxer position (it ignores seek ranges after it).
+
+    ``file-cache-bytes`` is the number of bytes stored in the file cache. This
+    includes all overhead, and possibly unused data (like pruned data). This
+    member is missing if the file cache is not active.
 
     When querying the property with the client API using ``MPV_FORMAT_NODE``,
     or with Lua ``mp.get_property_native``, this will return a mpv_node with
@@ -1504,7 +1547,10 @@ Property list
                 MPV_FORMAT_NODE_MAP
                     "start"             MPV_FORMAT_DOUBLE
                     "end"               MPV_FORMAT_DOUBLE
+            "bof-cached"        MPV_FORMAT_FLAG
+            "eof-cached"        MPV_FORMAT_FLAG
             "fw-bytes"          MPV_FORMAT_INT64
+            "file-cache-bytes"  MPV_FORMAT_INT64
 
     Other fields (might be changed or removed in the future):
 
@@ -1521,11 +1567,6 @@ Property list
     ``total-bytes``
         Sum of packet bytes (plus some overhead estimation) of the entire packet
         queue, including cached seekable ranges.
-
-    ``fw-bytes``
-        Sum of packet bytes (plus some overhead estimation) of the readahead
-        packet queue (packets between current decoder reader positions and
-        demuxer position).
 
 ``demuxer-via-network``
     Returns ``yes`` if the stream demuxed via the main demuxer is most likely
@@ -1555,7 +1596,7 @@ Property list
 ``seeking``
     Returns ``yes`` if the player is currently seeking, or otherwise trying
     to restart playback. (It's possible that it returns ``yes`` while a file
-    is loadedThis is because the same underlying code is used for seeking and
+    is loaded. This is because the same underlying code is used for seeking and
     resyncing.)
 
 ``mixer-active``
@@ -1851,27 +1892,12 @@ Property list
 ``osd-par``
     Last known OSD display pixel aspect (can be 0).
 
-``program`` (W)
-    Switch TS program (write-only).
-
-``dvb-channel`` (W)
-    Pair of integers: card,channel of current DVB stream.
-    Can be switched to switch to another channel on the same card.
-
-``dvb-channel-name`` (RW)
-    Name of current DVB program.
-    On write, a channel-switch to the named channel on the same
-    card is performed. Can also be used for channel switching.
-
 ``sub-text``
     Return the current subtitle text. Formatting is stripped. If a subtitle
     is selected, but no text is currently visible, or the subtitle is not
     text-based (i.e. DVD/BD subtitles), an empty string is returned.
 
     This property is experimental and might be removed in the future.
-
-``tv-brightness``, ``tv-contrast``, ``tv-saturation``, ``tv-hue`` (RW)
-    TV stuff.
 
 ``playlist-pos`` (RW)
     Current position on playlist. The first entry is on position 0. Writing
